@@ -196,6 +196,10 @@ export function createAtmosphere(scene, camera, ctx) {
         uSunDir: { value: new THREE.Vector3(0.3, 0.1, -1).normalize() },
         uWarp: { value: opts.warp || 0 },
         uWarpPhase: { value: opts.warpPhase || 0 },
+        uWarpScale: { value: opts.warpScale || 0.00085 },
+        uSoft: { value: opts.soft === undefined ? 0.46 : opts.soft },
+        uBreakup: { value: opts.breakup || 0 },
+        uHorizon: { value: opts.horizon || 0 },
       },
       vertexShader: GLSL_GROUND + /* glsl */`
         uniform sampler2D uNoise;
@@ -204,20 +208,27 @@ export function createAtmosphere(scene, camera, ctx) {
         uniform float uFollow;
         uniform float uWarp;
         uniform float uWarpPhase;
+        uniform float uWarpScale;
         uniform float uTime;
         uniform vec2 uDrift;
         varying vec3 vWorld;
+        varying float vLift;
         void main(){
           vec3 wp = position + uOrigin;
           if (uFollow > 0.5) wp.y = aGround(wp.x, wp.z) + uHeight;
           else wp.y = uOrigin.y + uHeight;
+          vLift = 0.0;
           // Billowing: without it a cloud layer is a razor-flat sheet whose
-          // silhouette gives the plane away at grazing angles.
+          // silhouette gives the plane away at grazing angles. Two octaves an
+          // octave-and-a-half apart give a broad swell carrying smaller heads,
+          // which is the difference between cloud and a rippled mirror.
           if (uWarp > 0.0) {
-            vec2 q = wp.xz * 0.00085 + uWarpPhase + uDrift * uTime * 0.5;
-            float w = texture2D(uNoise, q).r * 0.66
-                    + texture2D(uNoise, q * 2.31 + 0.44).g * 0.34;
-            wp.y += (w - 0.5) * uWarp;
+            vec2 q = wp.xz * uWarpScale + uWarpPhase + uDrift * uTime * 0.5;
+            float w = texture2D(uNoise, q).r * 0.62
+                    + texture2D(uNoise, q * 2.77 + 0.44).g * 0.26
+                    + texture2D(uNoise, q * 6.13 + 0.81).b * 0.12;
+            vLift = (w - 0.5) * 2.0;
+            wp.y += vLift * uWarp * 0.5;
           }
           vWorld = wp;
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
@@ -226,9 +237,11 @@ export function createAtmosphere(scene, camera, ctx) {
       fragmentShader: /* glsl */`
         uniform sampler2D uNoise;
         uniform float uTime, uDensity, uScale, uFade, uNear, uSharp, uWarm, uClipInv;
+        uniform float uSoft, uBreakup, uHorizon;
         uniform vec2 uDrift, uClip;
         uniform vec3 uColor, uWarmColor, uSunDir, uOrigin;
         varying vec3 vWorld;
+        varying float vLift;
 
         void main(){
           vec2 p = vWorld.xz * uScale;
@@ -237,19 +250,33 @@ export function createAtmosphere(scene, camera, ctx) {
           float a3 = texture2D(uNoise, p * 0.47 + uDrift * uTime * 0.4 + 0.71).b;
           float n = a1 * 0.5 + a2 * 0.28 + a3 * 0.42;
 
-          float a = smoothstep(uSharp, uSharp + 0.46, n) * uDensity;
+          // The vertical swell also thins the sheet: the flanks of a billow are
+          // where you should be able to see through it.
+          n += vLift * uBreakup;
+
+          float a = smoothstep(uSharp, uSharp + uSoft, n) * uDensity;
           float rad = length(vWorld.xz - uOrigin.xz);
-          a *= 1.0 - smoothstep(uFade * 0.42, uFade, rad);
+          a *= 1.0 - smoothstep(uFade * 0.28, uFade, rad);
           float cl = smoothstep(uClip.x, uClip.y, vWorld.z);
           a *= mix(cl, 1.0 - cl, uClipInv);
 
-          float dCam = distance(cameraPosition, vWorld);
+          vec3 toFrag = vWorld - cameraPosition;
+          float dCam = length(toFrag);
           a *= smoothstep(uNear, uNear * 3.4, dCam);
+
+          // Nothing should end at a hard line where the plane grazes eye level.
+          // Fading with the elevation angle lets the sea dissolve into the ridge
+          // haze instead of stopping against it.
+          if (uHorizon > 0.0) {
+            float elev = abs(toFrag.y) / max(1.0, dCam);
+            a *= mix(1.0, smoothstep(0.0, uHorizon, elev), 0.72);
+          }
           if (a <= 0.004) discard;
 
-          // the cloud tops catch the low sun
-          vec3 col = uColor;
-          float lift = smoothstep(0.35, 0.95, n) * uWarm;
+          // Local brightness variation: a billow lit from one side is not one
+          // flat value, and the tops catch the low sun first.
+          vec3 col = uColor * (0.80 + 0.44 * smoothstep(0.15, 0.85, n) + 0.18 * vLift);
+          float lift = smoothstep(0.30, 0.92, n + vLift * 0.35) * uWarm;
           col = mix(col, uWarmColor, lift * 0.75);
 
           gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
@@ -267,7 +294,9 @@ export function createAtmosphere(scene, camera, ctx) {
 
   const mistLayers = [];
   {
-    const n = preset.mistLayers;
+    // Six is already past the point where another near-fullscreen transparent
+    // sheet reads; capping it here buys back fill on the high preset.
+    const n = Math.min(preset.mistLayers, 6);
     const geo = new THREE.PlaneGeometry(120, 120, simple ? 24 : 44, simple ? 24 : 44);
     geo.rotateX(-Math.PI / 2);
     for (let i = 0; i < n; i++) {
@@ -295,39 +324,59 @@ export function createAtmosphere(scene, camera, ctx) {
 
   /* ── valley cloud sea ───────────────────────────────────────────────────── */
 
+  /**
+   * The cloud sea is five sheets that share nothing. Six near-identical sheets
+   * at near-identical scales stacked up into a rippled mirror; here the feature
+   * size spans a factor of eleven, the vertical swell a factor of nine, and
+   * every sheet drifts at its own speed in its own direction, so the silhouette
+   * never resolves into a plane. One sheet fewer than before, and each one now
+   * fades out toward the horizon, which pays for the extra work in fill.
+   */
   const cloudLayers = [];
   {
-    const heights = simple ? [-9, -22, -46] : [-8, -13, -20, -31, -48, -74];
-    const seg = simple ? 20 : 44;
+    const DEEP = [
+      // y      dens  scale    warp  wScale   sharp soft  drift          brk
+      { y: -9,  d: 0.44, s: 0.0165, w: 18,  ws: 0.0021,  sh: 0.50, so: 0.62, dx: 0.00090, dz: 0.00026, b: 0.20 },
+      { y: -15, d: 0.50, s: 0.0092, w: 34,  ws: 0.0014,  sh: 0.45, so: 0.52, dx: -0.00062, dz: 0.00040, b: 0.24 },
+      { y: -25, d: 0.58, s: 0.0044, w: 56,  ws: 0.00082, sh: 0.41, so: 0.42, dx: 0.00042, dz: -0.00022, b: 0.28 },
+      { y: -42, d: 0.66, s: 0.0022, w: 80,  ws: 0.00046, sh: 0.37, so: 0.34, dx: -0.00026, dz: -0.00014, b: 0.32 },
+      { y: -70, d: 0.74, s: 0.0015, w: 108, ws: 0.00028, sh: 0.33, so: 0.30, dx: 0.00016, dz: 0.00009, b: 0.36 },
+    ];
+    const SIMPLE = [DEEP[0], DEEP[2], DEEP[4]];
+    const rows = simple ? SIMPLE : DEEP;
+    const seg = simple ? 24 : 56;
     const geo = new THREE.PlaneGeometry(1800, 1800, seg, seg);
     geo.rotateX(-Math.PI / 2);
-    for (let i = 0; i < heights.length; i++) {
-      const t = i / (heights.length - 1);
+    for (let i = 0; i < rows.length; i++) {
+      const L = rows[i];
+      const t = i / (rows.length - 1);
       const mat = layerMaterial({
         height: 0,
         color: 0x7787ad,
-        density: 0.40 - t * 0.10,
-        scale: 0.0082 - t * 0.0042,
-        driftX: 0.00055 + t * 0.0003,
-        driftZ: 0.00018,
-        fade: 800,
+        density: L.d,
+        scale: L.s,
+        driftX: L.dx, driftZ: L.dz,
+        fade: 900,
         near: 8,
-        sharp: 0.44 - t * 0.06,
+        sharp: L.sh,
+        soft: L.so,
+        breakup: L.b,
+        horizon: 0.030 + t * 0.026,
         follow: false,
         clipA: -78, clipB: -50, clipInv: true,
-        // Deeper layers billow more; the phase offset stops the six sheets
-        // from undulating in lockstep and re-forming a visible stack.
-        warp: 7.5 + t * 13.0,
-        warpPhase: i * 0.37,
+        warp: L.w,
+        warpScale: L.ws,
+        warpPhase: i * 0.71 + 0.13,
       });
-      mat.userData.shade = 1 - t * 0.55;
+      mat.userData.shade = 1 - t * 0.52;
+      mat.userData.dens = L.d;
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(0, heights[i], -300);
-      mat.uniforms.uOrigin.value.set(0, heights[i], -300);
+      mesh.position.set(0, L.y, -300);
+      mat.uniforms.uOrigin.value.set(0, L.y, -300);
       mesh.frustumCulled = false;
       mesh.renderOrder = 4 + i;
       root.add(mesh);
-      cloudLayers.push({ mesh, mat, t, shade: mat.userData.shade });
+      cloudLayers.push({ mesh, mat, t, shade: mat.userData.shade, dens: L.d, speed: 0.55 + i * 0.42 });
     }
   }
 
@@ -482,12 +531,12 @@ export function createAtmosphere(scene, camera, ctx) {
       L.mat.uniforms.uWarm.value = dawn * 0.55;
     }
 
-    /* valley clouds */
+    /* valley clouds — each sheet keeps its own clock, so the sea churns */
     for (const L of cloudLayers) {
-      L.mat.uniforms.uTime.value = time;
-      L.mat.uniforms.uDensity.value = (0.40 - L.t * 0.10) * (0.62 + 0.38 * mist);
+      L.mat.uniforms.uTime.value = time * L.speed;
+      L.mat.uniforms.uDensity.value = L.dens * (0.62 + 0.38 * mist);
       L.mat.uniforms.uColor.value.copy(CLOUD_NIGHT).lerp(CLOUD_DAWN, dawn).multiplyScalar(L.shade);
-      L.mat.uniforms.uWarm.value = dawn * Math.max(0, 1 - L.t * 1.6);
+      L.mat.uniforms.uWarm.value = dawn * Math.max(0, 1 - L.t * 1.3);
     }
 
     /* motes */
@@ -499,11 +548,12 @@ export function createAtmosphere(scene, camera, ctx) {
 
     /* god rays billboard around the sun axis */
     if (rays.length) {
-      const az = (196 - 175 * smoothstep(0, 1, dawn)) * Math.PI / 180;
-      const el = (46 - 39.4 * smoothstep(0, 1, dawn)) * Math.PI / 180;
+      // must track lighting.js KEYS az/el, which the two modules cannot share
+      const az = (236 - 215 * smoothstep(0, 1, dawn)) * Math.PI / 180;
+      const el = (21 - 14.4 * smoothstep(0, 1, dawn)) * Math.PI / 180;
       const ce = Math.cos(el);
       _sun.set(Math.sin(az) * ce, Math.sin(el), -Math.cos(az) * ce).normalize();
-      const opacity = 0.085 * smoothstep(0.42, 0.95, dawn) * (0.5 + 0.5 * mist);
+      const opacity = 0.062 * smoothstep(0.42, 0.95, dawn) * (0.5 + 0.5 * mist);
       for (const r of rays) {
         r.group.quaternion.setFromUnitVectors(_up, _sun);
         _localCam.copy(camera.position);

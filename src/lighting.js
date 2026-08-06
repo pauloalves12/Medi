@@ -28,53 +28,59 @@ function smoothstep(e0, e1, x) {
 const KEYS = [
   {
     d: 0.00,
-    az: 196, el: 46,                    // a cold moon, high and behind the walker
-    key: 0x8fa4d8, keyI: 0.95,
-    disc: 0xcdd8f5, discI: 0.55, halo: 0.05,
+    // A cold moon, raking in low over the walker's left shoulder rather than
+    // sitting high and straight behind them. Low is the whole point: a shallow
+    // key barely touches the open ground — which must stay deep indigo — while
+    // it lights the side of every trunk, rock and blade that faces it.
+    az: 236, el: 21,
+    key: 0x9db1e4, keyI: 1.95,
+    disc: 0xcdd8f5, discI: 0.40, halo: 0.05,
     zenith: 0x080b18, horizon: 0x131c36, glow: 0x24406b, glowI: 0.35, ground: 0x0a0f1e,
-    hemiSky: 0x415a96, hemiGround: 0x151b2e, hemiI: 1.45,
-    ambient: 0x25325c, ambI: 0.95,
-    exposure: 1.04,
+    // Fill is roughly halved against the key so there is a lit side and a shadow
+    // side. The hemisphere stays saturated indigo so shadows never go grey.
+    hemiSky: 0x44609f, hemiGround: 0x141a2c, hemiI: 0.68,
+    ambient: 0x1f2c56, ambI: 0.40,
+    exposure: 1.01,
   },
   {
     d: 0.34,
-    az: 138, el: 17,
-    key: 0x9db0da, keyI: 0.85,
-    disc: 0xd7dcf0, discI: 0.35, halo: 0.10,
+    az: 178, el: 15,
+    key: 0xa8b8e0, keyI: 1.62,
+    disc: 0xd7dcf0, discI: 0.30, halo: 0.10,
     zenith: 0x101733, horizon: 0x2a2f4e, glow: 0x6a5378, glowI: 0.85, ground: 0x141a30,
-    hemiSky: 0x4d5c92, hemiGround: 0x1a1e2e, hemiI: 1.50,
-    ambient: 0x2d3a63, ambI: 0.98,
-    exposure: 1.06,
+    hemiSky: 0x516196, hemiGround: 0x191d2e, hemiI: 0.82,
+    ambient: 0x27345c, ambI: 0.46,
+    exposure: 1.04,
   },
   {
     d: 0.60,
-    az: 62, el: 2.2,
-    key: 0xffab72, keyI: 0.95,
+    az: 78, el: 2.2,
+    key: 0xffae78, keyI: 1.55,
     disc: 0xffb277, discI: 0.55, halo: 0.30,
     zenith: 0x1b2444, horizon: 0x5a4560, glow: 0xff8f52, glowI: 1.00, ground: 0x241f38,
-    hemiSky: 0x64729c, hemiGround: 0x211d2c, hemiI: 1.42,
-    ambient: 0x3a4066, ambI: 0.86,
-    exposure: 1.07,
+    hemiSky: 0x6a789f, hemiGround: 0x201c2b, hemiI: 1.02,
+    ambient: 0x333a60, ambI: 0.58,
+    exposure: 1.11,
   },
   {
     d: 0.82,
-    az: 31, el: 4.0,
-    key: 0xffbe84, keyI: 2.35,
-    disc: 0xffcf9a, discI: 1.5, halo: 0.55,
+    az: 34, el: 4.0,
+    key: 0xffc089, keyI: 2.60,
+    disc: 0xffcf9a, discI: 1.35, halo: 0.55,
     zenith: 0x25315a, horizon: 0x8a6a70, glow: 0xffab63, glowI: 1.20, ground: 0x352b40,
-    hemiSky: 0x808fab, hemiGround: 0x2a2431, hemiI: 1.22,
-    ambient: 0x434769, ambI: 0.66,
+    hemiSky: 0x8290ac, hemiGround: 0x2a2431, hemiI: 1.06,
+    ambient: 0x40456a, ambI: 0.54,
     exposure: 1.13,
   },
   {
     d: 1.00,
     az: 21, el: 6.6,
-    key: 0xffd0a0, keyI: 3.25,
-    disc: 0xffe0bb, discI: 2.4, halo: 0.72,
+    key: 0xffd2a4, keyI: 3.10,
+    disc: 0xffe0bb, discI: 2.1, halo: 0.72,
     zenith: 0x2e3c68, horizon: 0xa8848a, glow: 0xffc184, glowI: 1.25, ground: 0x40364a,
-    hemiSky: 0x9aa8c1, hemiGround: 0x322b38, hemiI: 1.15,
-    ambient: 0x4b4e72, ambI: 0.58,
-    exposure: 1.18,
+    hemiSky: 0x9aa8c1, hemiGround: 0x322b38, hemiI: 1.06,
+    ambient: 0x484c72, ambI: 0.50,
+    exposure: 1.15,
   },
 ];
 
@@ -108,9 +114,9 @@ const GradeShader = {
     tDiffuse: { value: null },
     uResolution: { value: new THREE.Vector2(1280, 720) },
     uTime: { value: 0 },
-    uVignette: { value: 0.44 },
-    uAberration: { value: 0.0018 },
-    uGrain: { value: 0.024 },
+    uVignette: { value: 0.32 },
+    uAberration: { value: 0.0006 },
+    uGrain: { value: 0.013 },
     uDawn: { value: 0 },
   },
   vertexShader: /* glsl */`
@@ -144,18 +150,26 @@ const GradeShader = {
       float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
 
       // lift the shadows toward indigo, push the highlights toward gold
-      col += vec3(0.030, 0.038, 0.072) * (1.0 - smoothstep(0.0, 0.40, l)) * (1.0 - 0.35 * uDawn);
-      col = mix(col, col * vec3(1.055, 0.996, 0.912), smoothstep(0.30, 0.92, l) * (0.45 + 0.55 * uDawn));
+      col += vec3(0.034, 0.042, 0.078) * (1.0 - smoothstep(0.0, 0.42, l)) * (1.0 - 0.35 * uDawn);
+      col = mix(col, col * vec3(1.048, 0.997, 0.922), smoothstep(0.30, 0.92, l) * (0.45 + 0.55 * uDawn));
 
-      // gentle filmic S-curve
-      col = mix(col, smoothstep(0.0, 1.0, col), 0.26);
+      // A very gentle S: a stronger one was crushing the shadow detail that the
+      // key light is there to reveal.
+      col = mix(col, smoothstep(0.0, 1.0, col), 0.13);
 
       // vignette
-      col *= 1.0 - uVignette * pow(clamp(r2 * 2.05, 0.0, 1.0), 1.35);
+      col *= 1.0 - uVignette * pow(clamp(r2 * 2.05, 0.0, 1.0), 1.5);
 
       // slow film grain, strongest in the shadows
       float g = hash(vUv * uResolution + vec2(uTime * 61.7, uTime * 37.3)) - 0.5;
       col += g * uGrain * (1.0 - 0.55 * l);
+
+      // Static ordered dither, a shade under one 8-bit step. Wide sky gradients
+      // band badly without it and grain alone is the wrong tool — it has to be
+      // loud enough to hide the step, which is louder than the look wants.
+      vec2 ip = floor(vUv * uResolution);
+      float d4 = fract(dot(ip, vec2(0.75487766, 0.56984029)));
+      col += (d4 - 0.5) * (0.85 / 255.0);
 
       gl_FragColor = vec4(col, 1.0);
     }
@@ -322,7 +336,10 @@ export function createLighting(scene, camera, renderer, ctx) {
 
   let bloomPass = null;
   if (preset.bloom) {
-    bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.45, 0.7, 0.85);
+    // Restrained: only genuine light sources (flame, orb core, the sun's disc)
+    // should ever cross the threshold. A wide, strong bloom was hazing the whole
+    // frame and turning the orb into a white hole at close range.
+    bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.30, 0.55, 0.92);
     composer.addPass(bloomPass);
   }
   composer.addPass(new OutputPass());
@@ -330,8 +347,8 @@ export function createLighting(scene, camera, renderer, ctx) {
   const gradePass = new ShaderPass(GradeShader);
   gradePass.material.toneMapped = false;
   if (!preset.bloom) {
-    gradePass.uniforms.uGrain.value = 0.018;
-    gradePass.uniforms.uAberration.value = 0.006;
+    gradePass.uniforms.uGrain.value = 0.011;
+    gradePass.uniforms.uAberration.value = 0.0;
   }
   composer.addPass(gradePass);
 
@@ -390,7 +407,9 @@ export function createLighting(scene, camera, renderer, ctx) {
     hemi.intensity = K.hemiI;
     ambient.color.copy(K.ambient);
     ambient.intensity = K.ambI;
-    bounce.intensity = 0.14 + 0.20 * dawn;
+    // With the fill pulled down, this is what keeps the shadow side shaped
+    // indigo instead of a dead silhouette.
+    bounce.intensity = 0.22 + 0.18 * dawn;
 
     // lantern: eased level plus a low-frequency, non-strobing flicker
     lanternLevel += clamp(lanternTarget - lanternLevel, -dt * 1.2, dt * 0.7);
@@ -404,12 +423,12 @@ export function createLighting(scene, camera, renderer, ctx) {
 
     gradePass.uniforms.uTime.value = time;
     gradePass.uniforms.uDawn.value = dawn;
-    gradePass.uniforms.uVignette.value = 0.46 - 0.09 * dawn;
+    gradePass.uniforms.uVignette.value = 0.34 - 0.08 * dawn;
 
     renderer.toneMappingExposure = K.exposure;
     if (bloomPass) {
-      bloomPass.strength = 0.45 + 0.14 * smoothstep(0.55, 1.0, dawn);
-      bloomPass.threshold = 0.85 - 0.10 * dawn;
+      bloomPass.strength = 0.30 + 0.09 * smoothstep(0.55, 1.0, dawn);
+      bloomPass.threshold = 0.92 - 0.07 * dawn;
     }
   }
 

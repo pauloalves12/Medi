@@ -163,6 +163,61 @@ function frondTexture() {
   return t;
 }
 
+/**
+ * One small seamless noise atlas shared by every surface in the world.
+ *   R = fine grain (high frequency)
+ *   G = broad mottle (low frequency — damp patches, lichen, weathering)
+ *   B = mid band, used for colour drift
+ * Each octave wraps on its own integer lattice so the tile is truly periodic and
+ * can be sampled at any world scale without a seam.
+ */
+function grainTexture(size, seed) {
+  const h2 = (x, y, s) => {
+    let n = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(s, 1274126177);
+    n = (n ^ (n >>> 13)) | 0;
+    n = Math.imul(n, 1274126177);
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+  };
+  const vnoise = (x, y, period, s) => {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const fx = x - xi, fy = y - yi;
+    const sx = fx * fx * (3 - fx * 2), sy = fy * fy * (3 - fy * 2);
+    const m = (v) => ((v % period) + period) % period;
+    const x0 = m(xi), x1 = m(xi + 1), y0 = m(yi), y1 = m(yi + 1);
+    const a = h2(x0, y0, s), b = h2(x1, y0, s), c = h2(x0, y1, s), d = h2(x1, y1, s);
+    const t = a + (b - a) * sx, u = c + (d - c) * sx;
+    return t + (u - t) * sy;
+  };
+  const fbmT = (u, v, oct, f0, s) => {
+    let val = 0, amp = 0.5, f = f0, norm = 0;
+    for (let o = 0; o < oct; o++) {
+      val += amp * vnoise(u * f, v * f, f, s + o * 977);
+      norm += amp; amp *= 0.5; f *= 2;
+    }
+    return val / norm;
+  };
+
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size;
+      const i = (y * size + x) * 4;
+      data[i] = clamp(fbmT(u, v, 4, 8, seed) * 255, 0, 255);
+      data[i + 1] = clamp(fbmT(u, v, 4, 2, seed + 711) * 255, 0, 255);
+      data[i + 2] = clamp(fbmT(u, v, 3, 4, seed + 1553) * 255, 0, 255);
+      data[i + 3] = 255;
+    }
+  }
+  const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 4;
+  t.needsUpdate = true;
+  return t;
+}
+
 function radialTexture(size, stops) {
   const [c, g] = canvas2d(size);
   const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
@@ -182,17 +237,19 @@ function radialTexture(size, stops) {
 function bronzeEnvTexture() {
   const [c, g] = canvas2d(64);
   const grad = g.createLinearGradient(0, 0, 0, 64);
-  grad.addColorStop(0.00, '#2b3357');   // zenith
-  grad.addColorStop(0.42, '#4a4a68');
-  grad.addColorStop(0.52, '#8d7566');   // horizon band
-  grad.addColorStop(0.58, '#4a3f42');
-  grad.addColorStop(1.00, '#14161f');   // ground
+  grad.addColorStop(0.00, '#232a49');   // zenith
+  grad.addColorStop(0.42, '#3e4058');
+  grad.addColorStop(0.52, '#6d5c52');   // horizon band
+  grad.addColorStop(0.60, '#3a3336');
+  grad.addColorStop(1.00, '#101219');   // ground
   g.fillStyle = grad;
   g.fillRect(0, 0, 64, 64);
-  // a soft warm sun smear on the horizon so the metal catches a highlight
-  const sun = g.createRadialGradient(44, 33, 0, 44, 33, 17);
-  sun.addColorStop(0, 'rgba(255,214,166,0.95)');
-  sun.addColorStop(1, 'rgba(255,190,140,0)');
+  // A broad, low-contrast warm wash rather than a sun disc: a small bright blob
+  // in a 64px equirect turns into one hard vertical streak down a lathed bell.
+  const sun = g.createRadialGradient(42, 33, 0, 42, 33, 34);
+  sun.addColorStop(0.0, 'rgba(255,206,158,0.42)');
+  sun.addColorStop(0.45, 'rgba(240,180,136,0.16)');
+  sun.addColorStop(1.0, 'rgba(220,165,125,0)');
   g.fillStyle = sun;
   g.fillRect(0, 0, 64, 64);
   const t = new THREE.CanvasTexture(c);
@@ -247,39 +304,152 @@ export function createEnvironment(scene, ctx) {
   const texFlame = flameTexture();
   const texBronzeEnv = bronzeEnvTexture();
   const texHalo = radialTexture(128, [
-    [0.0, 'rgba(255,236,208,1)'], [0.18, 'rgba(255,206,150,0.72)'],
-    [0.45, 'rgba(240,170,110,0.20)'], [1.0, 'rgba(200,140,90,0)'],
+    [0.0, 'rgba(255,232,202,0.80)'], [0.14, 'rgba(255,206,152,0.44)'],
+    [0.38, 'rgba(238,172,116,0.16)'], [0.70, 'rgba(214,152,102,0.04)'],
+    [1.0, 'rgba(196,138,92,0)'],
   ]);
 
-  const matStone = new THREE.MeshStandardMaterial({ color: 0x2f3138, roughness: 0.92, metalness: 0.0 });
-  const matTimber = new THREE.MeshStandardMaterial({ color: 0x2b2119, roughness: 0.88, metalness: 0.0 });
+  const texGrain = grainTexture(128, 4409);
+
+  /**
+   * Weathering, without a single UV. Samples the shared grain atlas in world
+   * space on all three axes and blends by the world normal, so a box, a lathe
+   * and the terrain all wear the same stone and nothing ever shows a repeat.
+   * Amplitudes stay low on purpose: this is painterly grime, not detail mapping.
+   *
+   *   fine   fine grain amplitude          sFine   its world frequency
+   *   broad  low-frequency mottle          sBroad  its world frequency
+   *   damp   darkening of the wet hollows  rough   roughness break-up
+   *   stretch >1 pulls the fine grain into streaks along world Y (timber)
+   *   tint   colour drift added where the mottle is high (lichen / rust)
+   */
+  const CHEAP_SURFACE = ctx.quality === 'low';
+
+  function addSurfaceDetail(material, o) {
+    const f = (v, d) => (v === undefined ? d : v).toFixed(4);
+    const fine = f(o.fine, 0.16), broad = f(o.broad, 0.20);
+    const damp = f(o.damp, 0.0), rough = f(o.rough, 0.16);
+    const sF = f(o.sFine, 2.0), sB = f(o.sBroad, 0.09);
+    const stretch = f(o.stretch, 1.0);
+    const tint = o.tint || [0.008, 0.012, 0.006];
+    const prev = material.onBeforeCompile;
+    const prevKey = material.customProgramCacheKey;
+
+    material.onBeforeCompile = (shader, renderer) => {
+      if (prev) prev(shader, renderer);
+      shader.uniforms.uGrain = { value: texGrain };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vSdW; varying vec3 vSdN;`)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+          #ifdef USE_INSTANCING
+            vSdN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * objectNormal);
+          #else
+            vSdN = normalize(mat3(modelMatrix) * objectNormal);
+          #endif`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vec4 sdW = vec4(transformed, 1.0);
+          #ifdef USE_INSTANCING
+            sdW = instanceMatrix * sdW;
+          #endif
+          vSdW = (modelMatrix * sdW).xyz;`);
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+          uniform sampler2D uGrain; varying vec3 vSdW; varying vec3 vSdN;`)
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+          {
+            vec3 an = abs(normalize(vSdN));
+            an /= max(1e-4, an.x + an.y + an.z);
+            vec3 w = vSdW;
+            // On the low tier both octaves collapse to a single planar tap.
+            // Most of the surface area in frame is near-horizontal ground, so
+            // the blend is barely missed and the fetch count drops by two thirds.
+            #ifdef SD_CHEAP
+              float mB = texture2D(uGrain, w.zx * ${sB}).g;
+              float mF = texture2D(uGrain, w.zx * vec2(${sF}, ${sF} / ${stretch})).r;
+            #else
+              float mB = texture2D(uGrain, w.zx * ${sB}).g * an.y
+                       + texture2D(uGrain, w.zy * ${sB}).g * an.x
+                       + texture2D(uGrain, w.xy * ${sB}).g * an.z;
+              vec2 kF = vec2(${sF}, ${sF} / ${stretch});
+              float mF = texture2D(uGrain, w.zx * kF).r * an.y
+                       + texture2D(uGrain, w.zy * kF).r * an.x
+                       + texture2D(uGrain, w.xy * kF).r * an.z;
+            #endif
+            float vB = mB - 0.5, vF = mF - 0.5;
+            diffuseColor.rgb *= 1.0 + vB * ${broad} + vF * ${fine};
+            diffuseColor.rgb += vec3(${tint[0].toFixed(4)}, ${tint[1].toFixed(4)}, ${tint[2].toFixed(4)}) * vB;
+            diffuseColor.rgb *= mix(1.0, 0.78, smoothstep(0.58, 0.26, mB) * ${damp});
+            roughnessFactor = clamp(roughnessFactor + vB * ${rough} + vF * ${rough} * 0.5, 0.06, 1.0);
+          }`);
+
+      if (CHEAP_SURFACE) shader.fragmentShader = '#define SD_CHEAP\n' + shader.fragmentShader;
+    };
+    material.customProgramCacheKey = () =>
+      (prevKey ? prevKey.call(material) : '') + '|sd' + fine + broad + damp + rough + sF + sB + stretch + tint.join();
+    return material;
+  }
+
+  const matStone = new THREE.MeshStandardMaterial({ color: 0x33353c, roughness: 0.92, metalness: 0.0 });
+  addSurfaceDetail(matStone, {
+    fine: 0.15, broad: 0.26, damp: 0.42, rough: 0.20,
+    sFine: 2.6, sBroad: 0.085, tint: [0.008, 0.014, 0.007],
+  });
+
+  const matTimber = new THREE.MeshStandardMaterial({ color: 0x30251b, roughness: 0.88, metalness: 0.0 });
+  addSurfaceDetail(matTimber, {
+    fine: 0.26, broad: 0.20, damp: 0.28, rough: 0.14,
+    sFine: 5.5, sBroad: 0.22, stretch: 8.0, tint: [0.014, 0.008, 0.003],
+  });
 
   const windUniforms = {
     uTime: { value: 0 },
     uWind: { value: 0.4 },
   };
 
-  /** attaches a shared time/wind uniform pair plus a vertex sway to a material */
-  function addSway(material, strength, exponent, tall) {
+  // One wind for the whole mountain. Everything leans down the same vector, in a
+  // travelling wave rather than a per-instance wobble, so nothing shimmers.
+  const WIND_DIR = [0.86, 0.51];
+
+  /**
+   * Shared time/wind uniforms plus a vertex sway.
+   * `base` optionally darkens the bottom of a blade or frond so it sits into
+   * the ground instead of being cut off against it.
+   */
+  function addSway(material, strength, exponent, tall, base) {
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = windUniforms.uTime;
       shader.uniforms.uWind = windUniforms.uWind;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
-          uniform float uTime; uniform float uWind;`)
+          uniform float uTime; uniform float uWind;
+          ${base ? 'varying float vSwayT;' : ''}`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
           #ifdef USE_INSTANCING
-            float swPh = instanceMatrix[3].x * 0.83 + instanceMatrix[3].z * 1.17;
+            vec3 swW = instanceMatrix[3].xyz;
           #else
-            float swPh = 0.0;
+            vec3 swW = vec3(0.0);
           #endif
+          // phase travels along the wind vector: a gust crosses the meadow
+          float swPh = (swW.x * ${WIND_DIR[0].toFixed(2)} + swW.z * ${WIND_DIR[1].toFixed(2)}) * 0.42;
           float swH = clamp(transformed.y / ${tall.toFixed(2)}, 0.0, 1.0);
-          float swA = (0.22 + 0.78 * uWind) * pow(swH, ${exponent.toFixed(2)}) * ${strength.toFixed(3)};
-          transformed.x += (sin(uTime * 1.15 + swPh) * 0.75 + sin(uTime * 2.61 + swPh * 1.7) * 0.25) * swA;
-          transformed.z += (cos(uTime * 0.91 + swPh * 1.3) * 0.7 + sin(uTime * 3.17 + swPh) * 0.2) * swA * 0.85;
+          float swA = (0.24 + 0.76 * uWind) * pow(swH, ${exponent.toFixed(2)}) * ${strength.toFixed(3)};
+          float swG = sin(uTime * 0.83 - swPh) * 0.72 + sin(uTime * 1.61 - swPh * 1.31 + 0.7) * 0.28;
+          // a permanent lean downwind, plus the gust riding on top of it
+          transformed.x += (0.42 + 0.58 * swG) * swA * ${WIND_DIR[0].toFixed(2)};
+          transformed.z += (0.42 + 0.58 * swG) * swA * ${WIND_DIR[1].toFixed(2)};
+          ${base ? 'vSwayT = uv.y;' : ''}
         `);
+      if (base) {
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', `#include <common>
+            varying float vSwayT;`)
+          .replace('#include <color_fragment>', `#include <color_fragment>
+            diffuseColor.rgb *= mix(${(1 - base).toFixed(3)}, 1.0, smoothstep(0.0, 0.42, vSwayT));`);
+      }
     };
-    material.customProgramCacheKey = () => 'sway' + strength + exponent + tall;
+    material.customProgramCacheKey = () => 'sway' + strength + exponent + tall + (base || 0);
   }
 
   /* ── terrain ───────────────────────────────────────────────────────────── */
@@ -351,6 +521,12 @@ export function createEnvironment(scene, ctx) {
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.95, metalness: 0.0, dithering: true,
     });
+    // Ground detail runs at two scales an order of magnitude apart so a lantern
+    // pool lands on soil rather than on an airbrush gradient.
+    addSurfaceDetail(mat, {
+      fine: 0.21, broad: 0.30, damp: 0.50, rough: 0.12,
+      sFine: 1.55, sBroad: 0.042, tint: [0.006, 0.011, 0.006],
+    });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = preset.shadows;
     mesh.castShadow = preset.shadows && ctx.quality === 'high';
@@ -368,79 +544,116 @@ export function createEnvironment(scene, ctx) {
 
   function buildPath() {
     const stones = [];
-    const step = 0.66;
-    for (let z = PATH_Z0 + 1.0; z > PATH_Z1 - 0.6; z -= step) {
+    // Rows are deliberately irregular in spacing, count, lateral phase and
+    // stagger: an even step plus an even count is what produced diagonal ranks
+    // marching to the horizon.
+    let z = PATH_Z0 + 1.0;
+    while (z > PATH_Z1 - 0.6) {
       const u = (PATH_Z0 - z) / PATH_LEN;
       const cx = pathCenterX(z);
       const half = Math.min(corridorHalf(z) - 0.55, 2.2);
-      const across = 5 + ((rnd() * 3) | 0);
+      const across = 4 + ((rnd() * 4) | 0);
+      const phase = (rnd() - 0.5) * 0.9;          // whole row slides sideways
+      const skew = (rnd() - 0.5) * 0.55;          // row is not perpendicular
       for (let i = 0; i < across; i++) {
-        const lat = ((i + 0.5) / across - 0.5) * 2 * half + (rnd() - 0.5) * 0.34;
+        const f = (i + 0.5) / across - 0.5;
+        const lat = f * 2 * half + phase * half * 0.5 + (rnd() - 0.5) * 0.5;
+        if (Math.abs(lat) > half + 0.10) continue;
+        if (rnd() < 0.10) continue;               // gaps: bare earth shows through
         const x = cx + lat;
-        const zz = z + (rnd() - 0.5) * 0.5;
-        if (Math.abs(lat) > half + 0.12) continue;
-        stones.push({ x, z: zz, u: clamp(u, 0, 1), s: 0.84 + rnd() * 0.34, r: rnd() * Math.PI, h: 0.85 + rnd() * 0.3 });
+        const zz = z + f * skew + (rnd() - 0.5) * 0.42;
+        stones.push({
+          x, z: zz, u: clamp(u, 0, 1),
+          s: 0.66 + Math.pow(rnd(), 0.8) * 0.72,
+          r: rnd() * Math.PI,
+          h: 0.7 + rnd() * 0.7,
+          g: Math.pow(rnd(), 1.35),               // per-stone glow weight
+        });
       }
+      z -= 0.50 + rnd() * 0.36;
     }
 
     // Small, flat, many-sided slabs: a laid path rather than stepping discs.
     const geo = new THREE.CylinderGeometry(STONE_R, STONE_R * 0.9, 0.1, 9, 1);
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x2a2d34, roughness: 0.72, metalness: 0.0, emissive: 0x000000,
+      color: 0x282b33, roughness: 0.88, metalness: 0.0, emissive: 0x000000,
+    });
+    addSurfaceDetail(mat, {
+      fine: 0.20, broad: 0.24, damp: 0.35, rough: 0.22,
+      sFine: 3.4, sBroad: 0.30, tint: [0.008, 0.013, 0.007],
     });
 
     stoneUniforms = {
       uFront: { value: -0.2 },
       uStrength: { value: 0 },
-      uGlowColor: { value: new THREE.Color(0xffab5e) },
+      uGlowColor: { value: new THREE.Color(0xffa960) },
     };
 
-    mat.onBeforeCompile = (shader) => {
+    const prevCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, renderer) => {
+      if (prevCompile) prevCompile(shader, renderer);
       shader.uniforms.uFront = stoneUniforms.uFront;
       shader.uniforms.uStrength = stoneUniforms.uStrength;
       shader.uniforms.uGlowColor = stoneUniforms.uGlowColor;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
-          attribute float aPathU; varying float vPathU; varying float vEdge; varying float vSide;`)
+          attribute float aPathU; attribute float aRand;
+          varying float vPathU; varying float vEdge; varying float vSide;
+          varying float vRand; varying float vDist;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
-          vPathU = aPathU;
+          vPathU = aPathU; vRand = aRand;
           vEdge = smoothstep(0.60, 1.02, length(position.xz) / ${STONE_R.toFixed(3)});
-          vSide = 1.0 - abs(normal.y);`);
+          vSide = 1.0 - abs(normal.y);
+          vec4 pStoneW = vec4(position, 1.0);
+          #ifdef USE_INSTANCING
+            pStoneW = instanceMatrix * pStoneW;
+          #endif
+          vDist = distance(cameraPosition, (modelMatrix * pStoneW).xyz);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
           uniform float uFront; uniform float uStrength; uniform vec3 uGlowColor;
-          varying float vPathU; varying float vEdge; varying float vSide;`)
+          varying float vPathU; varying float vEdge; varying float vSide;
+          varying float vRand; varying float vDist;`)
         .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-          float lit = (1.0 - smoothstep(uFront - 0.13, uFront, vPathU)) * uStrength;
+          float lit = (1.0 - smoothstep(uFront - 0.16, uFront, vPathU)) * uStrength;
+          // Every stone answers a little differently, and the light dies with
+          // range, so the route is read from shape and placement rather than
+          // from a corridor of identically bright tiles.
+          lit *= 0.22 + 1.20 * vRand;
+          lit *= 1.0 - smoothstep(5.5, 21.0, vDist);
           // Light seeps up through the joints: brightest on the rim of the top
           // face, almost nothing on the buried sides, so it reads as a seam
           // between stones rather than a glowing disc.
           float topness = 1.0 - vSide;
-          float seam = vEdge * vEdge;
-          totalEmissiveRadiance += uGlowColor * lit * (topness * (0.020 + seam * 0.26) + vSide * 0.03);
-          diffuseColor.rgb += uGlowColor * lit * 0.035;`);
+          float seam = vEdge * vEdge * vEdge;
+          totalEmissiveRadiance += uGlowColor * lit * (topness * (0.006 + seam * 0.23) + vSide * 0.016);
+          diffuseColor.rgb += uGlowColor * lit * 0.018;`);
     };
-    mat.customProgramCacheKey = () => 'pathstone';
+    const prevKey = mat.customProgramCacheKey;
+    mat.customProgramCacheKey = () => 'pathstone' + (prevKey ? prevKey.call(mat) : '');
 
     const mesh = new THREE.InstancedMesh(geo, mat, stones.length);
     mesh.receiveShadow = preset.shadows;
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
     const uArr = new Float32Array(stones.length);
+    const gArr = new Float32Array(stones.length);
     for (let i = 0; i < stones.length; i++) {
       const s = stones[i];
       // Barely tilted and bedded well down, so the coarse terrain triangles
       // never let a side wall show.
-      e.set((rnd() - 0.5) * 0.05, s.r, (rnd() - 0.5) * 0.05);
+      e.set((rnd() - 0.5) * 0.07, s.r, (rnd() - 0.5) * 0.07);
       q.setFromEuler(e);
       m.compose(
-        new THREE.Vector3(s.x, groundHeight(s.x, s.z) - 0.085 + (rnd() - 0.5) * 0.01, s.z),
+        new THREE.Vector3(s.x, groundHeight(s.x, s.z) - 0.095 + (rnd() - 0.5) * 0.022, s.z),
         q,
-        new THREE.Vector3(s.s, s.h, s.s * (0.85 + rnd() * 0.3)),
+        new THREE.Vector3(s.s, s.h, s.s * (0.78 + rnd() * 0.44)),
       );
       mesh.setMatrixAt(i, m);
       uArr[i] = s.u;
+      gArr[i] = s.g;
     }
     geo.setAttribute('aPathU', new THREE.InstancedBufferAttribute(uArr, 1));
+    geo.setAttribute('aRand', new THREE.InstancedBufferAttribute(gArr, 1));
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     root.add(mesh);
@@ -602,20 +815,53 @@ export function createEnvironment(scene, ctx) {
     const count = preset.grassCount;
     const geo = bladeGeometry();
     const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
-    addSway(mat, 0.30, 1.7, 1.0);
+    addSway(mat, 0.27, 1.7, 1.0, 0.58);
 
     const mesh = new THREE.InstancedMesh(geo, mat, count);
     mesh.receiveShadow = preset.shadows;
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
 
+    // Tufts, not a lawn. Most blades belong to a clump with its own height and
+    // colour bias; the rest are scattered singles that stop the clumps reading
+    // as discs.
+    const CLUMPS = ctx.quality === 'low' ? 150 : ctx.quality === 'medium' ? 380 : 700;
+    const clumps = [];
+    let cg = 0;
+    while (clumps.length < CLUMPS && cg++ < CLUMPS * 40) {
+      const z = 5 - rnd() * 61;
+      const side = rnd() < 0.5 ? -1 : 1;
+      const lat = (0.6 + Math.pow(rnd(), 1.8) * 16.4) * side;
+      const x = pathCenterX(z) + lat;
+      const y = groundHeight(x, z);
+      if (y < 0.2 && z < -50) continue;
+      clumps.push({
+        x, z,
+        r: 0.35 + Math.pow(rnd(), 1.4) * 1.5,
+        h: 0.62 + Math.pow(rnd(), 0.8) * 0.9,      // clump height bias
+        c: rnd(),                                   // clump colour bias
+        a: rnd() * 6.283,
+      });
+    }
+
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), sc = new THREE.Vector3();
-    const base = new THREE.Color(), dry = new THREE.Color(0x5f6149), green = new THREE.Color(0x3a4c38), pale = new THREE.Color(0x6d7e77);
+    const base = new THREE.Color(), dry = new THREE.Color(0x5f6149), green = new THREE.Color(0x36452f), pale = new THREE.Color(0x6d7e77);
     let placed = 0, guard = 0;
     while (placed < count && guard++ < count * 8) {
-      const z = 5 - rnd() * 61;                      // +5 .. -56
-      const side = rnd() < 0.5 ? -1 : 1;
-      const lat = Math.pow(rnd(), 1.9) * 17.0 * side;
-      const x = pathCenterX(z) + lat;
+      let x, z, hBias = 1, cBias = rnd(), aBias = null;
+      if (clumps.length && rnd() < 0.78) {
+        const cl = clumps[(rnd() * clumps.length) | 0];
+        const a = rnd() * 6.283, rr = Math.pow(rnd(), 0.6) * cl.r;
+        x = cl.x + Math.cos(a) * rr; z = cl.z + Math.sin(a) * rr;
+        hBias = cl.h * (1 - 0.32 * (rr / Math.max(0.001, cl.r)));   // tufts taper at the edge
+        cBias = clamp(cl.c + (rnd() - 0.5) * 0.35, 0, 1);
+        aBias = cl.a + (rnd() - 0.5) * 1.6;
+      } else {
+        z = 5 - rnd() * 61;                          // +5 .. -56
+        const side = rnd() < 0.5 ? -1 : 1;
+        x = pathCenterX(z) + Math.pow(rnd(), 1.9) * 17.0 * side;
+        hBias = 0.7 + rnd() * 0.5;
+      }
+      const lat = x - pathCenterX(z);
       const half = corridorHalf(z);
       if (Math.abs(lat) < half * 0.85 && rnd() > 0.09) continue;   // sparse on the flagstones
       const y = groundHeight(x, z);
@@ -624,19 +870,20 @@ export function createEnvironment(scene, ctx) {
       if (slope > 0.85 || rnd() < slope * 0.6) continue;
       if (z < -45 && Math.abs(x) < 2.6 && z > -51) continue;       // keep the shrine floor clear
 
-      e.set(0, rnd() * 6.283, (rnd() - 0.5) * 0.22);
+      // blades in a tuft share a rough heading but never a heading exactly
+      e.set((rnd() - 0.5) * 0.16, aBias === null ? rnd() * 6.283 : aBias, (rnd() - 0.5) * 0.42);
       q.setFromEuler(e);
-      const s = 0.22 + Math.pow(rnd(), 1.5) * 0.36;
-      v.set(x, y - 0.03, z);
+      const s = (0.17 + Math.pow(rnd(), 1.5) * 0.48) * hBias;
+      v.set(x, y - 0.045, z);
       // The blade curls forward in Z, so Z must scale with height — otherwise a
       // short blade keeps the full-height bend and lies flat like a twig.
-      const hs = s * (0.75 + rnd() * 0.6);
-      sc.set(0.85 + rnd() * 0.4, hs, hs);
+      const hs = s * (0.65 + rnd() * 0.8);
+      sc.set(0.8 + rnd() * 0.55, hs, hs);
       m.compose(v, q, sc);
       mesh.setMatrixAt(placed, m);
 
-      base.copy(green).lerp(dry, rnd() * 0.55).lerp(pale, smoothstep(6.0, 13.0, y) * 0.4 + rnd() * 0.10);
-      base.multiplyScalar(0.95 + rnd() * 0.5);
+      base.copy(green).lerp(dry, cBias * 0.62).lerp(pale, smoothstep(6.0, 13.0, y) * 0.4 + rnd() * 0.10);
+      base.multiplyScalar(0.88 + cBias * 0.34 + rnd() * 0.22);
       mesh.setColorAt(placed, base);
       placed++;
     }
@@ -658,9 +905,9 @@ export function createEnvironment(scene, ctx) {
     q1.computeVertexNormals(); q2.computeVertexNormals(); q3.computeVertexNormals();
     const fernGeo = mergeGeometries([q1, q2, q3]);
     const fernMat = new THREE.MeshLambertMaterial({
-      map: texFrond, color: 0x9fb09a, alphaTest: 0.4, side: THREE.DoubleSide,
+      map: texFrond, color: 0x93a48e, alphaTest: 0.4, side: THREE.DoubleSide,
     });
-    addSway(fernMat, 0.11, 1.5, 1.0);
+    addSway(fernMat, 0.10, 1.5, 1.0, 0.52);
 
     const n = ctx.quality === 'low' ? 90 : ctx.quality === 'medium' ? 200 : 330;
     const mesh = new THREE.InstancedMesh(fernGeo, fernMat, n);
@@ -738,6 +985,10 @@ export function createEnvironment(scene, ctx) {
       variants.push(g);
     }
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0, flatShading: true });
+    addSurfaceDetail(mat, {
+      fine: 0.18, broad: 0.30, damp: 0.30, rough: 0.18,
+      sFine: 2.2, sBroad: 0.14, tint: [0.007, 0.017, 0.006],   // lichen mottle
+    });
 
     const perVariant = [[], [], []];
     const zs = [1, -3.5, -8.5, -12, -15.5, -19, -23, -25, -28.5, -31, -33.5, -35, -38, -40.5, -43, -46, -48.5, -50.5, -52, -54];
@@ -747,10 +998,13 @@ export function createEnvironment(scene, ctx) {
       const dist = corridorHalf(z) + 0.4 + rnd() * 3.4;
       const x = pathCenterX(z) + side * dist;
       const y = groundHeight(x, z);
-      perVariant[i % 3].push({ x, y, z, s: 0.42 + Math.pow(rnd(), 1.2) * 1.5, r: rnd() * 6.283 });
-      if (rnd() < 0.45) {
+      // Boulders nearest the walker and flanking the shrine are allowed to grow:
+      // they are the only thing giving the opening and the ending a foreground.
+      const near = z > -6 ? 1.55 : z < -44 ? 1.35 : 1.0;
+      perVariant[i % 3].push({ x, y, z, s: (0.42 + Math.pow(rnd(), 1.2) * 1.5) * near, r: rnd() * 6.283 });
+      if (rnd() < 0.55) {
         const x2 = pathCenterX(z) + -side * (corridorHalf(z) + 0.8 + rnd() * 5);
-        perVariant[(i + 1) % 3].push({ x: x2, y: groundHeight(x2, z), z: z + 1.1, s: 0.3 + rnd() * 0.9, r: rnd() * 6.283 });
+        perVariant[(i + 1) % 3].push({ x: x2, y: groundHeight(x2, z), z: z + 1.1, s: (0.3 + rnd() * 0.9) * near, r: rnd() * 6.283 });
       }
     }
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
@@ -848,8 +1102,42 @@ export function createEnvironment(scene, ctx) {
   function buildOrb() {
     orb.position.copy(anchors.orb);
 
-    orbCoreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.28, 0.95), toneMapped: true });
-    orbCore = new THREE.Mesh(new THREE.SphereGeometry(0.115, 24, 16), orbCoreMat);
+    // The core is a *soft* body: brightest where we look straight through it and
+    // fading to nothing at its own silhouette. A solid basic-material sphere
+    // clips to a hard white disc the moment the breath opens up.
+    orbCoreMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uGlow: { value: 0.5 },
+        uColor: { value: new THREE.Color(0xffcf9e) },
+        uDeep: { value: new THREE.Color(0xd98a52) },
+      },
+      vertexShader: `
+        varying vec3 vN; varying vec3 vV; varying vec3 vP;
+        void main(){
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vN = normalize(mat3(modelMatrix) * normal);
+          vV = normalize(cameraPosition - wp.xyz);
+          vP = normalize(position);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }`,
+      fragmentShader: `
+        uniform float uTime; uniform float uGlow; uniform vec3 uColor; uniform vec3 uDeep;
+        varying vec3 vN; varying vec3 vV; varying vec3 vP;
+        void main(){
+          float d = clamp(dot(normalize(vN), normalize(vV)), 0.0, 1.0);
+          // slow convection inside the light, not a rotating pattern
+          float s = sin(vP.y * 5.1 + uTime * 0.33) * 0.5
+                  + sin(vP.x * 4.3 - uTime * 0.21 + 1.7) * 0.3
+                  + sin(vP.z * 6.7 + uTime * 0.17 + 3.1) * 0.2;
+          float body = pow(d, 1.35) * (0.86 + 0.14 * s);
+          vec3 c = mix(uDeep, uColor, pow(d, 0.7));
+          float a = body * (0.40 + 0.80 * uGlow);
+          gl_FragColor = vec4(c * (0.66 + 1.30 * uGlow), a);
+        }`,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.FrontSide,
+    });
+    orbCore = new THREE.Mesh(new THREE.SphereGeometry(0.155, 24, 16), orbCoreMat);
     orb.add(orbCore);
 
     orbShellMat = new THREE.ShaderMaterial({
@@ -872,11 +1160,16 @@ export function createEnvironment(scene, ctx) {
         uniform float uTime; uniform float uGlow; uniform vec3 uColor; uniform vec3 uRim;
         varying vec3 vN; varying vec3 vV; varying vec3 vP;
         void main(){
-          float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 2.6);
-          float band = 0.5 + 0.5 * sin(vP.y * 22.0 + uTime * 0.7);
-          vec3 c = mix(uColor, uRim, 0.45 + 0.35 * band);
-          float a = f * (0.30 + 0.85 * uGlow) + 0.035 * uGlow;
-          gl_FragColor = vec4(c * (0.5 + 1.4 * uGlow), a);
+          float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 3.1);
+          // Three slow, unequal periods: the shell breathes rather than ticks,
+          // and the veils never line up into stripes.
+          float band = 0.34 * sin(vP.y * 9.0 + uTime * 0.29)
+                     + 0.22 * sin(vP.y * 5.3 - vP.x * 3.9 + uTime * 0.19)
+                     + 0.14 * sin(vP.z * 7.1 + uTime * 0.11);
+          vec3 c = mix(uColor, uRim, 0.40 + 0.30 * (band + 0.5));
+          float veil = 0.030 + 0.055 * (0.5 + band);
+          float a = f * (0.22 + 0.62 * uGlow) + veil * uGlow;
+          gl_FragColor = vec4(c * (0.34 + 0.92 * uGlow), a);
         }`,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.FrontSide,
     });
@@ -884,7 +1177,7 @@ export function createEnvironment(scene, ctx) {
     orb.add(orbShell);
 
     orbHaloMat = new THREE.SpriteMaterial({
-      map: texHalo, color: 0xffcf9a, transparent: true, blending: THREE.AdditiveBlending,
+      map: texHalo, color: 0xf3c193, transparent: true, blending: THREE.AdditiveBlending,
       depthWrite: false, opacity: 0.5,
     });
     orbHalo = new THREE.Sprite(orbHaloMat);
@@ -937,7 +1230,11 @@ export function createEnvironment(scene, ctx) {
     put(new THREE.BoxGeometry(0.14, 0.14, 2.7), matTimber, 0, 3.68, 0);   // ridge
 
     // pitched roof — two slabs
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0x24262c, roughness: 0.9 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0x2a2c33, roughness: 0.9 });
+    addSurfaceDetail(roofMat, {
+      fine: 0.30, broad: 0.24, damp: 0.35, rough: 0.20,
+      sFine: 3.0, sBroad: 0.26, stretch: 5.0, tint: [0.006, 0.012, 0.008],
+    });
     for (const s of [-1, 1]) {
       const slab = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.10, 1.62), roofMat);
       slab.position.set(0, 3.32, s * 0.76);
@@ -973,8 +1270,8 @@ export function createEnvironment(scene, ctx) {
     pts.push(new THREE.Vector2(0.055, 0.14));
     const bellGeo = new THREE.LatheGeometry(pts, 28);
     bellMat = new THREE.MeshStandardMaterial({
-      color: 0x6b5231, roughness: 0.34, metalness: 0.6,
-      envMap: texBronzeEnv, envMapIntensity: 0.45,
+      color: 0x63482a, roughness: 0.56, metalness: 0.48,
+      envMap: texBronzeEnv, envMapIntensity: 0.36,
     });
     // The strike glows along the silhouette rather than filling the surface —
     // a uniform emissive flattens the bell into a cutout.
@@ -991,9 +1288,15 @@ export function createEnvironment(scene, ctx) {
           uniform float uRing; varying vec3 vBellN; varying vec3 vBellV;`)
         .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
           float fres = 1.0 - clamp(dot(normalize(vBellN), normalize(-vBellV)), 0.0, 1.0);
-          totalEmissiveRadiance += vec3(1.0, 0.68, 0.40) * uRing * pow(fres, 2.4) * 1.1;`);
+          totalEmissiveRadiance += vec3(0.85, 0.62, 0.42) * uRing * pow(fres, 3.0) * 0.55;`);
     };
     bellMat.customProgramCacheKey = () => 'bellbronze';
+    // Centuries of weather: patina blotches and an uneven polish, which also
+    // breaks the single hard specular streak a clean lathe otherwise shows.
+    addSurfaceDetail(bellMat, {
+      fine: 0.10, broad: 0.26, damp: 0.18, rough: 0.34,
+      sFine: 6.0, sBroad: 1.30, tint: [0.004, 0.012, 0.008],
+    });
     const bellMesh = new THREE.Mesh(bellGeo, bellMat);
     bellMesh.castShadow = preset.shadows;
     bell.add(bellMesh);
@@ -1030,11 +1333,15 @@ export function createEnvironment(scene, ctx) {
   const ridgeMats = [];
 
   function buildRidges() {
+    // Atmospheric perspective, layer by layer: each ridge is paler and lower in
+    // contrast than the one in front of it, and each dissolves upward from a
+    // hazy foot into a top that is already most of the way to the sky. That
+    // vertical drift is what stops four flat bands collapsing into one mass.
     const LAYERS = [
-      { r: 300, h: 62, base: -80, foot: -6, seed: 3.1, freq: 3.4, col: 0x505c80, mid: 0x424d70, top: 0x1e2740 },
-      { r: 620, h: 132, base: -150, foot: -8, seed: 8.7, freq: 2.6, col: 0x5a6489, mid: 0x4c5678, top: 0x2a3350 },
-      { r: 1050, h: 232, base: -250, foot: -10, seed: 15.2, freq: 2.0, col: 0x656e94, mid: 0x596283, top: 0x394261 },
-      { r: 1600, h: 378, base: -380, foot: -12, seed: 22.9, freq: 1.5, col: 0x6f77a0, mid: 0x656d90, top: 0x4a5271 },
+      { r: 300, h: 62, base: -80, foot: -6, seed: 3.1, freq: 3.4, col: 0x39466a, mid: 0x2b365a, top: 0x141c33 },
+      { r: 620, h: 132, base: -150, foot: -8, seed: 8.7, freq: 2.6, col: 0x525e8a, mid: 0x424d76, top: 0x252e4e },
+      { r: 1050, h: 232, base: -250, foot: -10, seed: 15.2, freq: 2.0, col: 0x6b749c, mid: 0x5c6690, top: 0x3d4670 },
+      { r: 1600, h: 378, base: -380, foot: -12, seed: 22.9, freq: 1.5, col: 0x848cb2, mid: 0x7a82aa, top: 0x5c6590 },
     ];
     const layers = ctx.quality === 'low' ? LAYERS.slice(1) : LAYERS;
     const segs = ctx.quality === 'low' ? 120 : 220;
@@ -1105,7 +1412,8 @@ export function createEnvironment(scene, ctx) {
     const f = clamp(force01 == null ? 1 : force01, 0, 1);
     bellSwing.amp = Math.max(bellSwing.amp, 0.055 + 0.13 * f);
     bellSwing.t = 0;
-    bellSwing.glow = Math.max(bellSwing.glow, 0.5 + 0.9 * f);
+    // A short, soft breath of warmth on the rim — the bell is bronze, not a lamp.
+    bellSwing.glow = Math.max(bellSwing.glow, 0.30 + 0.45 * f);
   }
 
   const U_LANTERN = clamp((PATH_Z0 - anchors.lantern.z) / PATH_LEN, 0, 1);
@@ -1126,7 +1434,7 @@ export function createEnvironment(scene, ctx) {
       // be all but gone by the time the sun is in the valley.
       const daylight = state ? clamp(state.dawn, 0, 1) : 0;
       stoneUniforms.uStrength.value = smoothstep(0.0, 0.14, pathGlow.raw) * (0.55 + 0.45 * e)
-        * (0.9 + 0.1 * Math.sin(time * 0.9)) * 0.52
+        * (0.9 + 0.1 * Math.sin(time * 0.9)) * 0.44
         * (1 - 0.94 * smoothstep(0.12, 0.72, daylight));
     }
 
@@ -1143,22 +1451,25 @@ export function createEnvironment(scene, ctx) {
     }
 
     /* orb */
-    orbState.active += clamp(orbState.target - orbState.active, -dt * 0.7, dt * 0.7);
+    // A slower arrival and departure: the orb should seem to have been there all
+    // along rather than to switch on.
+    orbState.active += clamp(orbState.target - orbState.active, -dt * 0.34, dt * 0.34);
     const act = smootherstep(orbState.active);
     const bob = Math.sin(time * 0.62) * 0.07 + Math.sin(time * 0.31 + 1.2) * 0.04;
     orb.position.set(anchors.orb.x + Math.sin(time * 0.23) * 0.05, anchors.orb.y + bob, anchors.orb.z);
-    orb.rotation.y = time * 0.14;
+    orb.rotation.y = time * 0.09;
     const breath = 0.85 + 0.50 * orbState.scale;
     const s = breath * (0.72 + 0.28 * act);
     _sc.set(s, s, s);
     orbShell.scale.copy(_sc);
-    orbCore.scale.setScalar(s * (0.9 + 0.2 * orbState.glow));
-    const glow = (0.18 + 0.82 * orbState.glow) * (0.10 + 0.90 * act);
+    orbCore.scale.setScalar(s * (0.86 + 0.20 * orbState.glow));
+    const glow = (0.30 + 0.70 * orbState.glow) * (0.10 + 0.90 * act);
     orbShellMat.uniforms.uGlow.value = glow;
     orbShellMat.uniforms.uTime.value = time;
-    orbCoreMat.color.setRGB(0.24 + 1.5 * glow, 0.20 + 1.24 * glow, 0.16 + 0.92 * glow);
-    orbHalo.scale.setScalar(1.15 + 1.35 * glow * s);
-    orbHaloMat.opacity = 0.16 + 0.62 * glow;
+    orbCoreMat.uniforms.uGlow.value = glow;
+    orbCoreMat.uniforms.uTime.value = time;
+    orbHalo.scale.setScalar(1.45 + 1.75 * glow * s);
+    orbHaloMat.opacity = (0.14 + 0.56 * glow) * (0.25 + 0.75 * act);
 
     /* bell */
     if (bellSwing.amp > 0.0001) {
@@ -1170,11 +1481,11 @@ export function createEnvironment(scene, ctx) {
       strikerPivot.rotation.x = -Math.sin(bellSwing.t * 5.2) * a * 1.9;
       if (bellSwing.t > 6.2) { bellSwing.amp = 0; bellPivot.rotation.set(0, 0, 0); strikerPivot.rotation.set(0, 0, 0); }
     }
-    bellSwing.glow = Math.max(0, bellSwing.glow - dt * 0.5);
+    bellSwing.glow = Math.max(0, bellSwing.glow - dt * 1.05);
     if (bellMat) {
-      bellRing.value = bellSwing.glow * 0.5;
+      bellRing.value = bellSwing.glow * bellSwing.glow * 0.55;
       // Dark bronze before dawn — there is no light at the shrine to reflect.
-      bellMat.envMapIntensity = 0.45 + (state ? state.dawn * 1.05 : 0) + bellSwing.glow * 0.2;
+      bellMat.envMapIntensity = 0.36 + (state ? state.dawn * 1.30 : 0) + bellSwing.glow * 0.12;
     }
 
     /* distant ridges lift toward the dawn sky */
@@ -1182,8 +1493,11 @@ export function createEnvironment(scene, ctx) {
     for (let i = 0; i < ridgeMats.length; i++) {
       const rl = ridgeMats[i];
       const far = clamp((rl.r - 250) / 1400, 0, 1);
-      _tmpColor.copy(_tintNight).lerp(_tintDawn, dawn * (0.35 + 0.65 * far));
-      const b = (0.55 + 0.45 * dawn) * (0.85 + 0.3 * far);
+      // Distance both warms a ridge toward the dawn and washes it toward the
+      // sky, so the spread between the nearest and the farthest layer widens as
+      // the light comes up instead of everything brightening together.
+      _tmpColor.copy(_tintNight).lerp(_tintDawn, dawn * (0.22 + 0.78 * far));
+      const b = (0.41 + 0.53 * dawn) * (0.70 + 0.66 * far);
       rl.mat.color.copy(_tmpColor).multiplyScalar(b);
     }
   }
