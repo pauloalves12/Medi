@@ -179,7 +179,7 @@ const interactions = createInteractions({
 
 /* ── phase orchestration ──────────────────────────────────────────────────── */
 
-const ENDING_SECONDS = 36;
+const ENDING_SECONDS = 44;
 const DAWN_SECONDS = 25;   // dawn reaches full a clear beat before the fade starts
 
 function updatePhases(dt) {
@@ -224,6 +224,9 @@ function begin() {
   audio.unlock();
   ui.hideTitle();
   player.setEnabled(true);
+  // Begin is a user gesture, so mouse-look can be captured right here rather
+  // than waiting for an unexplained second click on the world.
+  player.requestLock();
   setPhase('lantern');
   ui.fade(0, 2.4);
 }

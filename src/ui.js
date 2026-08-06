@@ -37,7 +37,7 @@ export function createUI(root, ctx) {
     <section class="title" data-el="title">
       <div class="title-inner">
         <h1 class="title-word">ASCENT</h1>
-        <p class="title-sub">a short mountain meditation · four minutes</p>
+        <p class="title-sub">a short mountain meditation · about three minutes</p>
         <button class="begin" type="button" data-el="begin"><span>Begin</span></button>
         <p class="title-controls">${controls}</p>
         <p class="title-hint">headphones recommended</p>
@@ -156,12 +156,24 @@ export function createUI(root, ctx) {
   let lastR = -1;
   let lastCycle = -1;
 
-  function setBreath(label, phase01, cycle, total) {
+  /**
+   * `anchor` is the orb's screen position in 0..1, or null for screen centre.
+   * The guide follows it loosely so the ring reads as belonging to the light.
+   */
+  function setBreath(label, phase01, cycle, total, anchor) {
     const t = total || 5;
     const c = (cycle || 0) | 0;
 
-    // all cycles done (or never started) — the guide leaves
-    if (!label && c >= t) {
+    // Dots first, so the final cycle is acknowledged on the frame it completes
+    // rather than being skipped by the dismissal below.
+    if (c !== lastCycle) {
+      lastCycle = c;
+      for (let i = 0; i < dots.length; i++) dots[i].classList.toggle('is-done', i < c);
+    }
+
+    // `null` dismisses the guide; '' keeps it up wordlessly (the rest beat, and
+    // the held beat after the fifth breath).
+    if (label === null && c >= t) {
       if (breathOn) {
         breathOn = false;
         el.breath.classList.remove('is-on');
@@ -180,10 +192,25 @@ export function createUI(root, ctx) {
     const r = Math.round((BREATH_MIN + (BREATH_MAX - BREATH_MIN) * clamp01(phase01)) * 10) / 10;
     if (r !== lastR) { el.breathCircle.setAttribute('r', String(r)); lastR = r; }
 
-    if (c !== lastCycle) {
-      lastCycle = c;
-      for (let i = 0; i < dots.length; i++) dots[i].classList.toggle('is-done', i < c);
-    }
+    if (anchor) { breathAim.x = anchor.x; breathAim.y = anchor.y; }
+  }
+
+  // Eased toward the orb so a quick glance never yanks the ring across the screen.
+  const breathAim = { x: 0.5, y: 0.5 };
+  const breathPos = { x: 0.5, y: 0.5 };
+  let lastBreathTransform = '';
+
+  function updateBreathAnchor(dt) {
+    if (!breathOn) { breathAim.x = 0.5; breathAim.y = 0.5; }
+    const k = 1 - Math.exp(-dt * (reduce ? 12 : 3.2));
+    breathPos.x += (breathAim.x - breathPos.x) * k;
+    breathPos.y += (breathAim.y - breathPos.y) * k;
+    // Damped and clamped: the guide leans toward the orb without ever leaving
+    // the frame or drifting far from the reading position.
+    const x = (clamp01(breathPos.x) - 0.5) * 0.55;
+    const y = (clamp01(breathPos.y) - 0.5) * 0.55;
+    const t = `translate(calc(-50% + ${(x * 100).toFixed(2)}vw), calc(-50% + ${(y * 100).toFixed(2)}vh))`;
+    if (t !== lastBreathTransform) { el.breath.style.transform = t; lastBreathTransform = t; }
   }
 
   /* ── subtitles (queued, never overlapping) ──────────────────────────────── */
@@ -191,13 +218,18 @@ export function createUI(root, ctx) {
   const IN = reduce ? 0.4 : 1.2;
   const OUT = reduce ? 0.5 : 1.8;
   const queue = [];
-  let subText = null, subHold = 0, subState = 'idle', subT = 0;
+  let subText = null, subHold = 0, subState = 'idle', subT = 0, subOut = OUT;
   let lastSubOpacity = -1, lastSubString = '';
 
   function setSubtitle(text, holdSeconds) {
     if (text === null || text === undefined) {
       queue.length = 0;
-      if (subState === 'in' || subState === 'hold') { subState = 'out'; subT = 0; }
+      if (subState === 'in' || subState === 'hold') {
+        // holdSeconds === 0 means "get out of the way now" — used when the
+        // breathing guide takes the screen, so no line lingers over it.
+        subOut = holdSeconds === 0 ? 0.45 : OUT;
+        subState = 'out'; subT = 0;
+      }
       return;
     }
     queue.push({ text, hold: holdSeconds || 5 });
@@ -207,7 +239,7 @@ export function createUI(root, ctx) {
     if (subState === 'idle') {
       if (queue.length) {
         const n = queue.shift();
-        subText = n.text; subHold = n.hold;
+        subText = n.text; subHold = n.hold; subOut = OUT;
         if (subText !== lastSubString) { el.subtitleText.textContent = subText; lastSubString = subText; }
         subState = 'in'; subT = 0;
       }
@@ -219,13 +251,13 @@ export function createUI(root, ctx) {
       if (subT >= subHold) { subState = 'out'; subT = 0; }
     } else if (subState === 'out') {
       subT += dt;
-      if (subT >= OUT) { subState = 'idle'; subT = 0; }
+      if (subT >= subOut) { subState = 'idle'; subT = 0; }
     }
 
     let o = 0;
     if (subState === 'in') o = subT / IN;
     else if (subState === 'hold') o = 1;
-    else if (subState === 'out') o = 1 - subT / OUT;
+    else if (subState === 'out') o = 1 - subT / subOut;
     o = Math.round(clamp01(o) * 100) / 100;
     if (o !== lastSubOpacity) {
       el.subtitle.style.opacity = String(o);
@@ -275,6 +307,7 @@ export function createUI(root, ctx) {
     if (state) elapsed = state.elapsed;
     tickSubtitle(dt);
     tickComplete(dt);
+    updateBreathAnchor(dt);
   }
 
   return { showTitle, hideTitle, setPrompt, setBreath, setSubtitle, showComplete, fade, update };

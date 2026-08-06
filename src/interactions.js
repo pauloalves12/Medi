@@ -40,6 +40,22 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
     toShrine: { point: anchors.bell,    label: 'Ring the bell',        reach: 2.6 },
   };
 
+  /* ── orb → screen, for anchoring the breath guide ───────────────────────── */
+
+  const orbWorld = new THREE.Vector3();
+  const orbProj = new THREE.Vector3();
+  const breathAnchor = { x: 0.5, y: 0.5 };
+
+  function orbScreen(out) {
+    env.orb.getWorldPosition(orbWorld);
+    orbProj.copy(orbWorld).project(camera);
+    // Behind the camera, w flips the projection — fall back to centre.
+    if (orbProj.z > 1) { out.x = 0.5; out.y = 0.5; return out; }
+    out.x = orbProj.x * 0.5 + 0.5;
+    out.y = -orbProj.y * 0.5 + 0.5;
+    return out;
+  }
+
   /* ── input: a single confirm hold ───────────────────────────────────────── */
 
   let holdDown = false;      // physical input held
@@ -62,9 +78,11 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
   function onKeyUp(e) { if (e.code === 'Space') pressUp(); }
   function onMouseDown(e) {
     if (e.button !== 0) return;
-    // works locked or not, but never on the title / completion affordances
+    // never on the title / completion affordances
     const t = e.target;
     if (t && t.closest && t.closest('button')) return;
+    // A click made purely to recapture the cursor should not also start a hold.
+    if (!player.locked) return;
     pressDown();
   }
   function onMouseUp(e) { if (e.button === 0) pressUp(); }
@@ -289,6 +307,9 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
         const fired = tickHold(dt, () => {
           if (!orbWoken) { orbWoken = true; env.setOrbActive(true); }
           ui.setPrompt(null);
+          // Clear any queued narration, and clear it quickly, so no line is
+          // still on screen when the breathing guide comes up.
+          ui.setSubtitle(null, 0);
           advance('breathing');
         });
         if (!fired) prompt(TARGETS.toOrb.label, holdT / HOLD_TIME, f);
@@ -298,6 +319,10 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
       /* ── the centrepiece ── */
       case 'breathing': {
         prompt(null);
+        // The guide sits where the orb is, and the orb is drawn gently toward
+        // the centre of the view — the two read as one thing.
+        orbScreen(breathAnchor);
+        player.lookAtPoint(env.orb.getWorldPosition(orbWorld), 0.16);
         if (!breathDone) {
           breathT += dt;
           if (breathT >= CYCLE) {
@@ -320,13 +345,16 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
             if (b.seg === 0) audio.breathCue('inhale');
             else if (b.seg === 2) audio.breathCue('exhale');
           }
-          ui.setBreath(b.label, b.scale, breathCycles, state.breathTotal);
+          ui.setBreath(b.label, b.scale, breathCycles, state.breathTotal, breathAnchor);
         } else {
-          // one quiet beat, then release
+          // Hold the completed guide — all five dots lit — for a beat, so the
+          // fifth breath is acknowledged before the ring leaves.
           env.setOrbBreath(0, 0.06);
-          ui.setBreath(null, 0, state.breathTotal, state.breathTotal);
+          ui.setBreath('', 0, state.breathTotal, state.breathTotal, breathAnchor);
           breathT += dt;
-          if (breathT > 1.6) {
+          if (breathT > 2.6) {
+            ui.setBreath(null, 0, state.breathTotal, state.breathTotal);
+            player.lookAtPoint(null, 0);
             player.setSpeedScale(1);
             env.setOrbActive(false);
             ui.setSubtitle('The mountain breathes with you.', 6);
@@ -379,7 +407,7 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
           endingCue = 4;
           audio.chime();
           ui.setSubtitle(null);
-        } else if (endingCue === 4 && pt > 30) {
+        } else if (endingCue === 4 && pt > 37) {
           endingCue = 5;
           ui.fade(1, 6, '#0b0f1c');
         }

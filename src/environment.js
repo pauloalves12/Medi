@@ -174,6 +174,33 @@ function radialTexture(size, stops) {
   return t;
 }
 
+/**
+ * A tiny equirectangular sky/ground gradient used purely as a reflection source
+ * for the bronze on the shrine. Without it, metal has nothing to reflect and
+ * reads as a flat silhouette.
+ */
+function bronzeEnvTexture() {
+  const [c, g] = canvas2d(64);
+  const grad = g.createLinearGradient(0, 0, 0, 64);
+  grad.addColorStop(0.00, '#2b3357');   // zenith
+  grad.addColorStop(0.42, '#4a4a68');
+  grad.addColorStop(0.52, '#8d7566');   // horizon band
+  grad.addColorStop(0.58, '#4a3f42');
+  grad.addColorStop(1.00, '#14161f');   // ground
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  // a soft warm sun smear on the horizon so the metal catches a highlight
+  const sun = g.createRadialGradient(44, 33, 0, 44, 33, 17);
+  sun.addColorStop(0, 'rgba(255,214,166,0.95)');
+  sun.addColorStop(1, 'rgba(255,190,140,0)');
+  g.fillStyle = sun;
+  g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 function flameTexture() {
   const [c, g] = canvas2d(64);
   g.clearRect(0, 0, 64, 64);
@@ -218,6 +245,7 @@ export function createEnvironment(scene, ctx) {
   const texNeedle = needleTexture();
   const texFrond = frondTexture();
   const texFlame = flameTexture();
+  const texBronzeEnv = bronzeEnvTexture();
   const texHalo = radialTexture(128, [
     [0.0, 'rgba(255,236,208,1)'], [0.18, 'rgba(255,206,150,0.72)'],
     [0.45, 'rgba(240,170,110,0.20)'], [1.0, 'rgba(200,140,90,0)'],
@@ -873,6 +901,7 @@ export function createEnvironment(scene, ctx) {
   const strikerPivot = new THREE.Object3D();
   const bell = new THREE.Group();
   const bellSwing = { amp: 0, t: 0, glow: 0 };
+  const bellRing = { value: 0 };
   let bellMat = null;
 
   function buildShrine() {
@@ -944,9 +973,27 @@ export function createEnvironment(scene, ctx) {
     pts.push(new THREE.Vector2(0.055, 0.14));
     const bellGeo = new THREE.LatheGeometry(pts, 28);
     bellMat = new THREE.MeshStandardMaterial({
-      color: 0x7a5a30, roughness: 0.38, metalness: 0.85,
-      emissive: new THREE.Color(0xffa860), emissiveIntensity: 0.0,
+      color: 0x6b5231, roughness: 0.34, metalness: 0.6,
+      envMap: texBronzeEnv, envMapIntensity: 0.45,
     });
+    // The strike glows along the silhouette rather than filling the surface —
+    // a uniform emissive flattens the bell into a cutout.
+    bellMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uRing = bellRing;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vBellN; varying vec3 vBellV;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vBellN = normalize(normalMatrix * objectNormal);
+          vBellV = (modelViewMatrix * vec4(transformed, 1.0)).xyz;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+          uniform float uRing; varying vec3 vBellN; varying vec3 vBellV;`)
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          float fres = 1.0 - clamp(dot(normalize(vBellN), normalize(-vBellV)), 0.0, 1.0);
+          totalEmissiveRadiance += vec3(1.0, 0.68, 0.40) * uRing * pow(fres, 2.4) * 1.1;`);
+    };
+    bellMat.customProgramCacheKey = () => 'bellbronze';
     const bellMesh = new THREE.Mesh(bellGeo, bellMat);
     bellMesh.castShadow = preset.shadows;
     bell.add(bellMesh);
@@ -1075,8 +1122,12 @@ export function createEnvironment(scene, ctx) {
     const e = smootherstep(pathGlow.raw);
     if (stoneUniforms) {
       stoneUniforms.uFront.value = U_LANTERN - 0.04 + (1.12 - U_LANTERN) * e;
+      // Daylight overwhelms it: the golden path is a pre-dawn guide and should
+      // be all but gone by the time the sun is in the valley.
+      const daylight = state ? clamp(state.dawn, 0, 1) : 0;
       stoneUniforms.uStrength.value = smoothstep(0.0, 0.14, pathGlow.raw) * (0.55 + 0.45 * e)
-        * (0.9 + 0.1 * Math.sin(time * 0.9)) * 0.52;
+        * (0.9 + 0.1 * Math.sin(time * 0.9)) * 0.52
+        * (1 - 0.94 * smoothstep(0.12, 0.72, daylight));
     }
 
     /* lantern */
@@ -1119,8 +1170,12 @@ export function createEnvironment(scene, ctx) {
       strikerPivot.rotation.x = -Math.sin(bellSwing.t * 5.2) * a * 1.9;
       if (bellSwing.t > 6.2) { bellSwing.amp = 0; bellPivot.rotation.set(0, 0, 0); strikerPivot.rotation.set(0, 0, 0); }
     }
-    bellSwing.glow = Math.max(0, bellSwing.glow - dt * 0.42);
-    if (bellMat) bellMat.emissiveIntensity = bellSwing.glow * 0.55 + (state ? state.dawn * 0.10 : 0);
+    bellSwing.glow = Math.max(0, bellSwing.glow - dt * 0.5);
+    if (bellMat) {
+      bellRing.value = bellSwing.glow * 0.5;
+      // Dark bronze before dawn — there is no light at the shrine to reflect.
+      bellMat.envMapIntensity = 0.45 + (state ? state.dawn * 1.05 : 0) + bellSwing.glow * 0.2;
+    }
 
     /* distant ridges lift toward the dawn sky */
     const dawn = state ? clamp(state.dawn, 0, 1) : 0;

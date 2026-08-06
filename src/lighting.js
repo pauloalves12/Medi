@@ -109,7 +109,7 @@ const GradeShader = {
     uResolution: { value: new THREE.Vector2(1280, 720) },
     uTime: { value: 0 },
     uVignette: { value: 0.44 },
-    uAberration: { value: 0.011 },
+    uAberration: { value: 0.0018 },
     uGrain: { value: 0.024 },
     uDawn: { value: 0 },
   },

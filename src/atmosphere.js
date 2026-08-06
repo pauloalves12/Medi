@@ -194,16 +194,31 @@ export function createAtmosphere(scene, camera, ctx) {
         uWarm: { value: 0 },
         uWarmColor: { value: new THREE.Color(0xffbe86) },
         uSunDir: { value: new THREE.Vector3(0.3, 0.1, -1).normalize() },
+        uWarp: { value: opts.warp || 0 },
+        uWarpPhase: { value: opts.warpPhase || 0 },
       },
       vertexShader: GLSL_GROUND + /* glsl */`
+        uniform sampler2D uNoise;
         uniform vec3 uOrigin;
         uniform float uHeight;
         uniform float uFollow;
+        uniform float uWarp;
+        uniform float uWarpPhase;
+        uniform float uTime;
+        uniform vec2 uDrift;
         varying vec3 vWorld;
         void main(){
           vec3 wp = position + uOrigin;
           if (uFollow > 0.5) wp.y = aGround(wp.x, wp.z) + uHeight;
           else wp.y = uOrigin.y + uHeight;
+          // Billowing: without it a cloud layer is a razor-flat sheet whose
+          // silhouette gives the plane away at grazing angles.
+          if (uWarp > 0.0) {
+            vec2 q = wp.xz * 0.00085 + uWarpPhase + uDrift * uTime * 0.5;
+            float w = texture2D(uNoise, q).r * 0.66
+                    + texture2D(uNoise, q * 2.31 + 0.44).g * 0.34;
+            wp.y += (w - 0.5) * uWarp;
+          }
           vWorld = wp;
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
         }
@@ -283,7 +298,8 @@ export function createAtmosphere(scene, camera, ctx) {
   const cloudLayers = [];
   {
     const heights = simple ? [-9, -22, -46] : [-8, -13, -20, -31, -48, -74];
-    const geo = new THREE.PlaneGeometry(1800, 1800, 1, 1);
+    const seg = simple ? 20 : 44;
+    const geo = new THREE.PlaneGeometry(1800, 1800, seg, seg);
     geo.rotateX(-Math.PI / 2);
     for (let i = 0; i < heights.length; i++) {
       const t = i / (heights.length - 1);
@@ -299,6 +315,10 @@ export function createAtmosphere(scene, camera, ctx) {
         sharp: 0.44 - t * 0.06,
         follow: false,
         clipA: -78, clipB: -50, clipInv: true,
+        // Deeper layers billow more; the phase offset stops the six sheets
+        // from undulating in lockstep and re-forming a visible stack.
+        warp: 7.5 + t * 13.0,
+        warpPhase: i * 0.37,
       });
       mat.userData.shade = 1 - t * 0.55;
       const mesh = new THREE.Mesh(geo, mat);
