@@ -335,26 +335,28 @@ export function createEnvironment(scene, ctx) {
   /* ── flagstone path ────────────────────────────────────────────────────── */
 
   const pathGlow = { target: 0, raw: 0 };
+  const STONE_R = 0.36;
   let stoneUniforms = null;
 
   function buildPath() {
     const stones = [];
-    const step = 0.92;
+    const step = 0.66;
     for (let z = PATH_Z0 + 1.0; z > PATH_Z1 - 0.6; z -= step) {
       const u = (PATH_Z0 - z) / PATH_LEN;
       const cx = pathCenterX(z);
       const half = Math.min(corridorHalf(z) - 0.55, 2.2);
-      const across = 3 + ((rnd() * 2) | 0);
+      const across = 5 + ((rnd() * 3) | 0);
       for (let i = 0; i < across; i++) {
         const lat = ((i + 0.5) / across - 0.5) * 2 * half + (rnd() - 0.5) * 0.34;
         const x = cx + lat;
         const zz = z + (rnd() - 0.5) * 0.5;
         if (Math.abs(lat) > half + 0.12) continue;
-        stones.push({ x, z: zz, u: clamp(u, 0, 1), s: 0.86 + rnd() * 0.30, r: rnd() * Math.PI, h: 0.8 + rnd() * 0.45 });
+        stones.push({ x, z: zz, u: clamp(u, 0, 1), s: 0.84 + rnd() * 0.34, r: rnd() * Math.PI, h: 0.85 + rnd() * 0.3 });
       }
     }
 
-    const geo = new THREE.CylinderGeometry(0.5, 0.44, 0.16, 6, 1);
+    // Small, flat, many-sided slabs: a laid path rather than stepping discs.
+    const geo = new THREE.CylinderGeometry(STONE_R, STONE_R * 0.9, 0.1, 9, 1);
     const mat = new THREE.MeshStandardMaterial({
       color: 0x2a2d34, roughness: 0.72, metalness: 0.0, emissive: 0x000000,
     });
@@ -374,7 +376,7 @@ export function createEnvironment(scene, ctx) {
           attribute float aPathU; varying float vPathU; varying float vEdge; varying float vSide;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
           vPathU = aPathU;
-          vEdge = smoothstep(0.72, 1.02, length(position.xz) / 0.5);
+          vEdge = smoothstep(0.60, 1.02, length(position.xz) / ${STONE_R.toFixed(3)});
           vSide = 1.0 - abs(normal.y);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
@@ -382,8 +384,13 @@ export function createEnvironment(scene, ctx) {
           varying float vPathU; varying float vEdge; varying float vSide;`)
         .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
           float lit = (1.0 - smoothstep(uFront - 0.13, uFront, vPathU)) * uStrength;
-          totalEmissiveRadiance += uGlowColor * lit * (vSide * 0.22 + vEdge * vEdge * 0.04 + 0.005);
-          diffuseColor.rgb += uGlowColor * lit * 0.02;`);
+          // Light seeps up through the joints: brightest on the rim of the top
+          // face, almost nothing on the buried sides, so it reads as a seam
+          // between stones rather than a glowing disc.
+          float topness = 1.0 - vSide;
+          float seam = vEdge * vEdge;
+          totalEmissiveRadiance += uGlowColor * lit * (topness * (0.020 + seam * 0.26) + vSide * 0.03);
+          diffuseColor.rgb += uGlowColor * lit * 0.035;`);
     };
     mat.customProgramCacheKey = () => 'pathstone';
 
@@ -393,10 +400,12 @@ export function createEnvironment(scene, ctx) {
     const uArr = new Float32Array(stones.length);
     for (let i = 0; i < stones.length; i++) {
       const s = stones[i];
-      e.set((rnd() - 0.5) * 0.12, s.r, (rnd() - 0.5) * 0.12);
+      // Barely tilted and bedded well down, so the coarse terrain triangles
+      // never let a side wall show.
+      e.set((rnd() - 0.5) * 0.05, s.r, (rnd() - 0.5) * 0.05);
       q.setFromEuler(e);
       m.compose(
-        new THREE.Vector3(s.x, groundHeight(s.x, s.z) - 0.062 + (rnd() - 0.5) * 0.014, s.z),
+        new THREE.Vector3(s.x, groundHeight(s.x, s.z) - 0.085 + (rnd() - 0.5) * 0.01, s.z),
         q,
         new THREE.Vector3(s.s, s.h, s.s * (0.85 + rnd() * 0.3)),
       );
@@ -539,7 +548,7 @@ export function createEnvironment(scene, ctx) {
   /* ── grass ─────────────────────────────────────────────────────────────── */
 
   function bladeGeometry() {
-    const segs = 3, h = 1.0, w = 0.036;
+    const segs = 4, h = 1.0, w = 0.021;
     const pos = [], uv = [], idx = [], nor = [];
     for (let i = 0; i <= segs; i++) {
       const t = i / segs;
@@ -572,7 +581,7 @@ export function createEnvironment(scene, ctx) {
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
 
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), sc = new THREE.Vector3();
-    const base = new THREE.Color(), dry = new THREE.Color(0x51533f), green = new THREE.Color(0x2c3b2b), pale = new THREE.Color(0x64756e);
+    const base = new THREE.Color(), dry = new THREE.Color(0x5f6149), green = new THREE.Color(0x3a4c38), pale = new THREE.Color(0x6d7e77);
     let placed = 0, guard = 0;
     while (placed < count && guard++ < count * 8) {
       const z = 5 - rnd() * 61;                      // +5 .. -56
@@ -591,12 +600,15 @@ export function createEnvironment(scene, ctx) {
       q.setFromEuler(e);
       const s = 0.22 + Math.pow(rnd(), 1.5) * 0.36;
       v.set(x, y - 0.03, z);
-      sc.set(0.8 + rnd() * 0.5, s * (0.75 + rnd() * 0.6), 1);
+      // The blade curls forward in Z, so Z must scale with height — otherwise a
+      // short blade keeps the full-height bend and lies flat like a twig.
+      const hs = s * (0.75 + rnd() * 0.6);
+      sc.set(0.85 + rnd() * 0.4, hs, hs);
       m.compose(v, q, sc);
       mesh.setMatrixAt(placed, m);
 
       base.copy(green).lerp(dry, rnd() * 0.55).lerp(pale, smoothstep(6.0, 13.0, y) * 0.4 + rnd() * 0.10);
-      base.multiplyScalar(0.85 + rnd() * 0.55);
+      base.multiplyScalar(0.95 + rnd() * 0.5);
       mesh.setColorAt(placed, base);
       placed++;
     }

@@ -373,10 +373,14 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
         if (endingCue === 0 && pt > 3.5) { endingCue = 1; ui.setSubtitle('Nothing to reach for.', 6); }
         else if (endingCue === 1 && pt > 12.5) { endingCue = 2; ui.setSubtitle('Nothing to hold.', 6); }
         else if (endingCue === 2 && pt > 21.5) { endingCue = 3; ui.setSubtitle('Just this.', 6); }
-        else if (endingCue === 3 && pt > 26) {
+        else if (endingCue === 3 && pt > 25.5) {
+          // Dawn is at full by now; the chime marks the peak and the fade only
+          // begins once the player has had a few seconds of it.
           endingCue = 4;
           audio.chime();
           ui.setSubtitle(null);
+        } else if (endingCue === 4 && pt > 30) {
+          endingCue = 5;
           ui.fade(1, 6, '#0b0f1c');
         }
         break;

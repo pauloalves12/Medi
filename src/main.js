@@ -179,7 +179,8 @@ const interactions = createInteractions({
 
 /* ── phase orchestration ──────────────────────────────────────────────────── */
 
-const ENDING_SECONDS = 34;
+const ENDING_SECONDS = 36;
+const DAWN_SECONDS = 25;   // dawn reaches full a clear beat before the fade starts
 
 function updatePhases(dt) {
   state.phaseTime += dt;
@@ -189,11 +190,13 @@ function updatePhases(dt) {
       break;
 
     case 'ending': {
-      const t = Math.min(1, state.phaseTime / ENDING_SECONDS);
+      // Dawn peaks early and then holds, so the last seconds are spent at full
+      // light rather than still climbing when the fade begins.
+      const t = Math.min(1, state.phaseTime / DAWN_SECONDS);
       const e = t * t * (3 - 2 * t);
       state.dawn = e;
       state.mist = 1 - 0.62 * e;
-      if (t >= 1) {
+      if (state.phaseTime >= ENDING_SECONDS) {
         setPhase('complete');
         ui.showComplete(restart);
       }
@@ -205,6 +208,10 @@ function updatePhases(dt) {
       state.dawn = Math.max(state.dawn, state.lanternLit ? 0.06 : 0);
       break;
   }
+
+  // The lantern's key light is owned by lighting.js but gated on world state,
+  // so the integration layer is the one place that drives it.
+  lighting.setLanternIntensity(state.lanternLit ? 1 : 0);
 
   // Slow, non-repeating wind envelope shared by grass, trees, mist and audio.
   const e = state.elapsed;
