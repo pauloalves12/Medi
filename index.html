@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0d18" />
+<title>Ascent — a mountain meditation</title>
+<link rel="stylesheet" href="./styles.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <!-- All UI lives inside #ui and is owned by src/ui.js -->
+  <div id="ui" aria-live="polite"></div>
+
+  <noscript>
+    <div class="noscript">This meditation needs JavaScript and WebGL.</div>
+  </noscript>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
