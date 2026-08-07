@@ -256,7 +256,7 @@ export function createAtmosphere(scene, camera, ctx) {
 
           float a = smoothstep(uSharp, uSharp + uSoft, n) * uDensity;
           float rad = length(vWorld.xz - uOrigin.xz);
-          a *= 1.0 - smoothstep(uFade * 0.28, uFade, rad);
+          a *= 1.0 - smoothstep(uFade * 0.5, uFade, rad);
           float cl = smoothstep(uClip.x, uClip.y, vWorld.z);
           a *= mix(cl, 1.0 - cl, uClipInv);
 
@@ -269,7 +269,9 @@ export function createAtmosphere(scene, camera, ctx) {
           // haze instead of stopping against it.
           if (uHorizon > 0.0) {
             float elev = abs(toFrag.y) / max(1.0, dCam);
-            a *= mix(1.0, smoothstep(0.0, uHorizon, elev), 0.72);
+            // Only a light touch: this angle *is* the ending's viewing angle, so
+            // anything stronger empties the valley in the payoff frame.
+            a *= mix(1.0, smoothstep(0.0, uHorizon, elev), 0.35);
           }
           if (a <= 0.004) discard;
 
@@ -336,11 +338,11 @@ export function createAtmosphere(scene, camera, ctx) {
   {
     const DEEP = [
       // y      dens  scale    warp  wScale   sharp soft  drift          brk
-      { y: -9,  d: 0.44, s: 0.0165, w: 18,  ws: 0.0021,  sh: 0.50, so: 0.62, dx: 0.00090, dz: 0.00026, b: 0.20 },
-      { y: -15, d: 0.50, s: 0.0092, w: 34,  ws: 0.0014,  sh: 0.45, so: 0.52, dx: -0.00062, dz: 0.00040, b: 0.24 },
-      { y: -25, d: 0.58, s: 0.0044, w: 56,  ws: 0.00082, sh: 0.41, so: 0.42, dx: 0.00042, dz: -0.00022, b: 0.28 },
-      { y: -42, d: 0.66, s: 0.0022, w: 80,  ws: 0.00046, sh: 0.37, so: 0.34, dx: -0.00026, dz: -0.00014, b: 0.32 },
-      { y: -70, d: 0.74, s: 0.0015, w: 108, ws: 0.00028, sh: 0.33, so: 0.30, dx: 0.00016, dz: 0.00009, b: 0.36 },
+      { y: -9,  d: 0.60, s: 0.0165, w: 18,  ws: 0.0021,  sh: 0.50, so: 0.62, dx: 0.00090, dz: 0.00026, b: 0.20 },
+      { y: -15, d: 0.66, s: 0.0092, w: 34,  ws: 0.0014,  sh: 0.45, so: 0.52, dx: -0.00062, dz: 0.00040, b: 0.24 },
+      { y: -25, d: 0.72, s: 0.0044, w: 56,  ws: 0.00082, sh: 0.41, so: 0.42, dx: 0.00042, dz: -0.00022, b: 0.28 },
+      { y: -42, d: 0.78, s: 0.0022, w: 80,  ws: 0.00046, sh: 0.37, so: 0.34, dx: -0.00026, dz: -0.00014, b: 0.32 },
+      { y: -70, d: 0.84, s: 0.0015, w: 108, ws: 0.00028, sh: 0.33, so: 0.30, dx: 0.00016, dz: 0.00009, b: 0.36 },
     ];
     const SIMPLE = [DEEP[0], DEEP[2], DEEP[4]];
     const rows = simple ? SIMPLE : DEEP;
@@ -526,7 +528,9 @@ export function createAtmosphere(scene, camera, ctx) {
     for (const L of mistLayers) {
       L.mat.uniforms.uTime.value = time * (0.6 + 0.4 * wind);
       L.mat.uniforms.uOrigin.value.set(cx, 0, cz);
-      L.mat.uniforms.uDensity.value = (0.105 - L.t * 0.045) * (0.22 + 0.9 * mist);
+      // Before dawn the mist is the only thing standing between the shadow side
+      // of the valley and pure black. It thins out as the light arrives.
+      L.mat.uniforms.uDensity.value = (0.105 - L.t * 0.045) * (0.22 + 0.9 * mist) * (1 + 0.42 * (1 - dawn));
       L.mat.uniforms.uColor.value.copy(MIST_NIGHT).lerp(MIST_DAWN, dawn * 0.8);
       L.mat.uniforms.uWarm.value = dawn * 0.55;
     }

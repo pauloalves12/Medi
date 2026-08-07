@@ -620,7 +620,7 @@ export function createEnvironment(scene, ctx) {
           // range, so the route is read from shape and placement rather than
           // from a corridor of identically bright tiles.
           lit *= 0.22 + 1.20 * vRand;
-          lit *= 1.0 - smoothstep(5.5, 21.0, vDist);
+          lit *= 1.0 - smoothstep(8.0, 34.0, vDist);
           // Light seeps up through the joints: brightest on the rim of the top
           // face, almost nothing on the buried sides, so it reads as a seam
           // between stones rather than a glowing disc.
@@ -1337,23 +1337,32 @@ export function createEnvironment(scene, ctx) {
     // contrast than the one in front of it, and each dissolves upward from a
     // hazy foot into a top that is already most of the way to the sky. That
     // vertical drift is what stops four flat bands collapsing into one mass.
+    // Atmospheric perspective, layer by layer: each ridge is paler and lower in
+    // contrast than the one in front of it. `top` is the rock at the ridge line
+    // and `haze` is what the last stretch below the silhouette fades into — the
+    // farther the layer, the closer that is to the sky itself, so the farthest
+    // ridge dissolves at its own edge instead of printing a hard blue stripe
+    // against the pines.
     const LAYERS = [
-      { r: 300, h: 62, base: -80, foot: -6, seed: 3.1, freq: 3.4, col: 0x39466a, mid: 0x2b365a, top: 0x141c33 },
-      { r: 620, h: 132, base: -150, foot: -8, seed: 8.7, freq: 2.6, col: 0x525e8a, mid: 0x424d76, top: 0x252e4e },
-      { r: 1050, h: 232, base: -250, foot: -10, seed: 15.2, freq: 2.0, col: 0x6b749c, mid: 0x5c6690, top: 0x3d4670 },
-      { r: 1600, h: 378, base: -380, foot: -12, seed: 22.9, freq: 1.5, col: 0x848cb2, mid: 0x7a82aa, top: 0x5c6590 },
+      { r: 300, h: 62, base: -80, foot: -6, seed: 3.1, freq: 3.4, col: 0x39466a, mid: 0x2b365a, top: 0x1a2340, haze: 0x111a31 },
+      { r: 620, h: 132, base: -150, foot: -8, seed: 8.7, freq: 2.6, col: 0x525e8a, mid: 0x424d76, top: 0x2d3758, haze: 0x1b2440 },
+      { r: 1050, h: 232, base: -250, foot: -10, seed: 15.2, freq: 2.0, col: 0x6b749c, mid: 0x59628c, top: 0x3f486f, haze: 0x242d4d },
+      { r: 1600, h: 378, base: -380, foot: -12, seed: 22.9, freq: 1.5, col: 0x757ea8, mid: 0x646d99, top: 0x454e78, haze: 0x2a3354 },
     ];
     const layers = ctx.quality === 'low' ? LAYERS.slice(1) : LAYERS;
     const segs = ctx.quality === 'low' ? 120 : 220;
 
     for (const L of layers) {
-      // three rings: a hazy foot that dissolves into the cloud sea, then rock
-      const RN = 3;
+      // Four rings: a hazy foot dissolving into the cloud sea, rock through the
+      // body, then a long haze band across the top half so the silhouette has
+      // room to fade instead of ending on a printed edge.
+      const RN = 4;
       const pos = new Float32Array((segs + 1) * RN * 3);
       const col = new Float32Array((segs + 1) * RN * 3);
       const idx = new Uint32Array(segs * (RN - 1) * 6);
-      const cBase = new THREE.Color(L.col), cMid = new THREE.Color(L.mid), cTop = new THREE.Color(L.top);
-      const cols = [cBase, cMid, cTop];
+      const cBase = new THREE.Color(L.col), cMid = new THREE.Color(L.mid);
+      const cTop = new THREE.Color(L.top), cHaze = new THREE.Color(L.haze);
+      const cols = [cBase, cMid, cTop, cHaze];
       for (let i = 0; i <= segs; i++) {
         const a = (i / segs) * Math.PI * 2;
         const ca = Math.cos(a), sa = Math.sin(a);
@@ -1363,7 +1372,8 @@ export function createEnvironment(scene, ctx) {
           amp *= 0.48; f *= 2.13;
         }
         const top = L.h * (0.42 + 0.72 * clamp(n * 0.5 + 0.5, 0, 1));
-        const ys = [L.base, L.foot, top];
+        // the haze band occupies the upper 45% of the visible face
+        const ys = [L.base, L.foot, lerp(L.foot, top, 0.55), top];
         for (let r = 0; r < RN; r++) {
           const k = (i * RN + r) * 3;
           pos[k] = ca * L.r; pos[k + 1] = ys[r]; pos[k + 2] = sa * L.r;
