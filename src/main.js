@@ -53,7 +53,7 @@
  *      deps = { camera, env, player, ui, audio, state, advance }
  *
  *  ui.js           createUI(root, ctx) -> {
- *      showTitle(onBegin) / hideTitle()
+ *      showTitle({ onBegin, modes, mode, onMode }) / hideTitle()
  *      setPrompt(text | null, progress01?)
  *      setBreath(label | null, phase01, cycle, total)
  *      setSubtitle(text | null, holdSeconds?)
@@ -67,10 +67,17 @@
  *      lanternLight() / breathCue('inhale'|'exhale') / bell(force01)
  *      chime() / update(dt, state)
  *    }
+ *
+ * timeofday.js is the one exception to "no cross-imports", and only because it
+ * is not a module in this sense: it is a leaf table of colours and one-line
+ * response curves with no behaviour and no imports of its own. main.js reads it
+ * here and hands the selected mode to everyone on `ctx.tod`, so the modules
+ * still talk to nothing but the contract above and the shared `state`.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import * as THREE from 'three';
+import { MODES, MODE_ORDER, DEFAULT_MODE, resolveMode } from './timeofday.js';
 import { createEnvironment } from './environment.js';
 import { createLighting } from './lighting.js';
 import { createAtmosphere } from './atmosphere.js';
@@ -100,6 +107,35 @@ const QUALITY_PRESETS = {
   low:    { dpr: 1.0, shadows: false, shadowSize: 512,  bloom: false, fog: 'simple',    grassCount: 5000,  particles: 220, treeDetail: 0.45, mistLayers: 3 },
 };
 
+/* ── time of day ──────────────────────────────────────────────────────────── */
+
+/**
+ * The mode is fixed for the lifetime of the page. Half of what separates the
+ * two experiences is decided while materials are being built — palettes, the
+ * orb's shader colours, the tint on the pines — so switching from the title
+ * screen reloads with `?mode=` rather than growing every module a second code
+ * path for a change nobody makes twice. The reload happens behind a fade, and
+ * lands back on the title with the other world already behind it.
+ */
+function detectMode() {
+  const q = new URLSearchParams(location.search).get('mode');
+  return MODES[q] ? q : DEFAULT_MODE;
+}
+
+const modeName = detectMode();
+const MODE = resolveMode(modeName);
+
+function chooseMode(next) {
+  if (next === modeName || !MODES[next]) return;
+  ui.fade(1, 0.55, MODES[next].fadeIn);
+  setTimeout(() => {
+    const url = new URL(location.href);
+    if (next === DEFAULT_MODE) url.searchParams.delete('mode');
+    else url.searchParams.set('mode', next);
+    location.replace(url.toString());
+  }, 620);
+}
+
 /* ── shared state ─────────────────────────────────────────────────────────── */
 
 const PHASES = ['title', 'lantern', 'toOrb', 'breathing', 'toShrine', 'bell', 'ending', 'complete'];
@@ -117,9 +153,14 @@ const state = {
   breathPhase: 0,     // 0..1 within the current cycle
   bellRung: false,
 
-  dawn: 0,            // 0 = pre-dawn indigo, 1 = sun in the valley
+  // 0..1 along the active mode's light arc. DAWN: pre-dawn indigo -> sun in the
+  // valley. DUSK: clear afternoon -> coral afterglow. Every module reads it
+  // through its own curve in timeofday.js, so the same number can mean "the
+  // lantern matters less" in one mode and "the lantern matters more" in the other.
+  dawn: 0,
   mist: 1,            // 1 = thick, 0.35 = cleared at the end
   windGust: 0,        // 0..1 slow wind envelope, driven here, read by everyone
+  breathOpen: 0,      // 0..1 lungs, written by interactions.js during 'breathing'
 };
 
 function setPhase(next) {
@@ -159,7 +200,12 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 2200);
 
-const ctx = { quality, preset, renderer, THREE, isTouch: matchMedia('(pointer: coarse)').matches };
+const ctx = {
+  quality, preset, renderer, THREE,
+  isTouch: matchMedia('(pointer: coarse)').matches,
+  mode: modeName,
+  tod: MODE,
+};
 
 const env = createEnvironment(scene, ctx);
 const lighting = createLighting(scene, camera, renderer, ctx);
@@ -182,23 +228,28 @@ const interactions = createInteractions({
 
 /* ── phase orchestration ──────────────────────────────────────────────────── */
 
-const ENDING_SECONDS = 44;
-const DAWN_SECONDS = 25;   // dawn reaches full a clear beat before the fade starts
+// Both modes run the same 44s ending; what differs is how much of it the light
+// spends travelling. See `arc` in timeofday.js.
+const ENDING_SECONDS = MODE.arc.endingSeconds;
+const LIGHT_SECONDS = MODE.arc.lightSeconds;
 
 function updatePhases(dt) {
   state.phaseTime += dt;
 
   switch (state.phase) {
     case 'title':
+    case 'complete':
+      // Nothing left to drive: the arc is where the ending left it.
       break;
 
     case 'ending': {
-      // Dawn peaks early and then holds, so the last seconds are spent at full
-      // light rather than still climbing when the fade begins.
-      const t = Math.min(1, state.phaseTime / DAWN_SECONDS);
+      // The light peaks early and then holds, so the last seconds are spent at
+      // full light rather than still climbing when the fade begins.
+      const t = Math.min(1, state.phaseTime / LIGHT_SECONDS);
       const e = t * t * (3 - 2 * t);
-      state.dawn = e;
-      state.mist = 1 - 0.62 * e;
+      const arc = MODE.arc.ending(e);
+      state.dawn = arc.light;
+      state.mist = arc.mist;
       if (state.phaseTime >= ENDING_SECONDS) {
         setPhase('complete');
         ui.showComplete(restart);
@@ -206,10 +257,15 @@ function updatePhases(dt) {
       break;
     }
 
-    default:
-      // Lantern light bleeds a little warmth into the world once lit.
-      state.dawn = Math.max(state.dawn, state.lanternLit ? 0.06 : 0);
+    default: {
+      // The walk's own slow drift through the day. DAWN barely moves — a little
+      // warmth once the lantern is lit — while DUSK covers a third of its arc
+      // here, slowly enough that nothing about it is noticeable until the shrine.
+      const arc = MODE.arc.idle(state);
+      state.dawn = Math.max(state.dawn, arc.light);
+      state.mist = arc.mist;
       break;
+    }
   }
 
   // The lantern's key light is owned by lighting.js but gated on world state,
@@ -238,7 +294,12 @@ function restart() {
   location.reload();
 }
 
-ui.showTitle(begin);
+ui.showTitle({
+  onBegin: begin,
+  mode: modeName,
+  modes: MODE_ORDER.map((id) => ({ id, label: MODES[id].label, tagline: MODES[id].tagline })),
+  onMode: chooseMode,
+});
 
 /* ── frame loop ───────────────────────────────────────────────────────────── */
 

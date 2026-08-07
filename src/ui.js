@@ -38,6 +38,8 @@ export function createUI(root, ctx) {
       <div class="title-inner">
         <h1 class="title-word">ASCENT</h1>
         <p class="title-sub">a short mountain meditation · about three minutes</p>
+        <div class="hours" data-el="hours" role="radiogroup" aria-label="time of day"></div>
+        <p class="hours-tagline" data-el="hoursTagline"></p>
         <button class="begin" type="button" data-el="begin"><span>Begin</span></button>
         <p class="title-controls">${controls}</p>
         <p class="title-hint">headphones recommended</p>
@@ -104,8 +106,50 @@ export function createUI(root, ctx) {
   let beginHandler = null;
   el.begin.addEventListener('click', () => { if (beginHandler) beginHandler(); });
 
-  function showTitle(onBegin) {
-    beginHandler = onBegin;
+  /**
+   * The hours. Two words with a hairline under the chosen one and a single
+   * italic line beneath saying what it is — the same grammar as `Begin`, not a
+   * pair of toggle buttons. Selecting one is a decision about the whole piece,
+   * so it reads like part of the title card rather than a setting.
+   */
+  function buildHours(modes, current, onMode) {
+    if (!modes || modes.length < 2) return;
+    el.hours.classList.add('is-on');
+    const tagline = {};
+    for (const m of modes) {
+      tagline[m.id] = m.tagline;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'hour';
+      b.dataset.mode = m.id;
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(m.id === current));
+      b.innerHTML = `<span>${m.label}</span>`;
+      if (m.id === current) b.classList.add('is-current');
+      b.addEventListener('click', () => { if (m.id !== current && onMode) onMode(m.id); });
+      // Hovering previews the other tagline without committing to anything.
+      b.addEventListener('pointerenter', () => setTagline(tagline[m.id]));
+      b.addEventListener('focus', () => setTagline(tagline[m.id]));
+      b.addEventListener('pointerleave', () => setTagline(tagline[current]));
+      b.addEventListener('blur', () => setTagline(tagline[current]));
+      el.hours.appendChild(b);
+    }
+    setTagline(tagline[current]);
+  }
+
+  let lastTagline = '';
+  function setTagline(text) {
+    const t = text || '';
+    if (t === lastTagline) return;
+    lastTagline = t;
+    el.hoursTagline.textContent = t;
+  }
+
+  function showTitle(opts) {
+    const o = typeof opts === 'function' ? { onBegin: opts } : (opts || {});
+    beginHandler = o.onBegin;
+    buildHours(o.modes, o.mode, o.onMode);
+    if (o.mode) el.title.classList.add(`is-${o.mode}`);
     el.title.classList.add('is-on');
     setTimeout(() => { try { el.begin.focus({ preventScroll: true }); } catch (e) { /* noop */ } },
       reduce ? 200 : 2600);

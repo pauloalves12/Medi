@@ -153,6 +153,7 @@ function shaftTexture() {
 
 export function createAtmosphere(scene, camera, ctx) {
   const preset = ctx.preset;
+  const tod = ctx.tod;
   const simple = preset.fog === 'simple';
   const root = new THREE.Group();
   root.name = 'atmosphere';
@@ -166,9 +167,9 @@ export function createAtmosphere(scene, camera, ctx) {
 
   /* ── scene fog ──────────────────────────────────────────────────────────── */
 
-  const fogNight = new THREE.Color(0x11172b);
-  const fogDawn = new THREE.Color(0x8b8098);
-  const fog = new THREE.FogExp2(fogNight.getHex(), 0.0072);
+  const fogA = new THREE.Color(tod.fog.a);
+  const fogB = new THREE.Color(tod.fog.b);
+  const fog = new THREE.FogExp2(fogA.getHex(), 0.0072);
   scene.fog = fog;
   scene.background = null;
 
@@ -192,7 +193,7 @@ export function createAtmosphere(scene, camera, ctx) {
         uClip: { value: new THREE.Vector2(opts.clipA, opts.clipB) },
         uClipInv: { value: opts.clipInv ? 1 : 0 },
         uWarm: { value: 0 },
-        uWarmColor: { value: new THREE.Color(0xffbe86) },
+        uWarmColor: { value: new THREE.Color(tod.mist.warmColor) },
         uSunDir: { value: new THREE.Vector3(0.3, 0.1, -1).normalize() },
         uWarp: { value: opts.warp || 0 },
         uWarpPhase: { value: opts.warpPhase || 0 },
@@ -483,7 +484,7 @@ export function createAtmosphere(scene, camera, ctx) {
     const mat = new THREE.MeshBasicMaterial({
       map: texShaft, transparent: true, blending: THREE.AdditiveBlending,
       depthWrite: false, opacity: 0, side: THREE.DoubleSide, fog: false,
-      color: 0xffd6ab, toneMapped: true,
+      color: tod.rays.color, toneMapped: true,
     });
     const spots = [
       [-4.5, -13], [5.2, -20], [-6.0, -29], [3.4, -36], [-2.5, -44], [6.5, -8],
@@ -508,56 +509,64 @@ export function createAtmosphere(scene, camera, ctx) {
   const _up = new THREE.Vector3(0, 1, 0);
   const _sun = new THREE.Vector3();
   const _localCam = new THREE.Vector3();
-  const MIST_NIGHT = new THREE.Color(0x6d80ad);
-  const MIST_DAWN = new THREE.Color(0xd8c9c6);
-  const CLOUD_NIGHT = new THREE.Color(0x36415f);
-  const CLOUD_DAWN = new THREE.Color(0xa2949e);
+  const MIST_A = new THREE.Color(tod.mist.a);
+  const MIST_B = new THREE.Color(tod.mist.b);
+  const CLOUD_A = new THREE.Color(tod.cloud.a);
+  const CLOUD_B = new THREE.Color(tod.cloud.b);
 
   function update(dt, state) {
     time += dt;
     const dawn = state ? clamp(state.dawn, 0, 1) : 0;
     const mist = state ? clamp(state.mist, 0, 1.2) : 1;
     const wind = state ? clamp(state.windGust, 0, 1.2) : 0.5;
+    // -0.5..0.5 around the middle of a breath. The air thins on the inhale and
+    // gathers on the exhale, by a few percent — DAWN's amplitudes are zero.
+    const breath = state ? clamp(state.breathOpen, 0, 1) - 0.5 : 0;
 
     /* fog */
-    fog.color.copy(fogNight).lerp(fogDawn, dawn * 0.85);
-    fog.density = (0.0030 + 0.0044 * mist) * (1 - 0.28 * dawn);
+    fog.color.copy(fogA).lerp(fogB, dawn * tod.fog.mix);
+    fog.density = tod.fog.density(dawn, mist) * (1 - tod.breath.fog * breath);
 
     /* ground mist follows the camera so its edges are never visible */
     const cx = camera.position.x, cz = camera.position.z;
+    const mistBreath = 1 - tod.breath.mist * breath;
     for (const L of mistLayers) {
       L.mat.uniforms.uTime.value = time * (0.6 + 0.4 * wind);
       L.mat.uniforms.uOrigin.value.set(cx, 0, cz);
       // Before dawn the mist is the only thing standing between the shadow side
-      // of the valley and pure black. It thins out as the light arrives.
-      L.mat.uniforms.uDensity.value = (0.105 - L.t * 0.045) * (0.22 + 0.9 * mist) * (1 + 0.42 * (1 - dawn));
-      L.mat.uniforms.uColor.value.copy(MIST_NIGHT).lerp(MIST_DAWN, dawn * 0.8);
-      L.mat.uniforms.uWarm.value = dawn * 0.55;
+      // of the valley and pure black; in daylight it is the restrained haze that
+      // keeps the far ridges from cutting out. Both are the mode's curve.
+      L.mat.uniforms.uDensity.value = tod.mist.density(dawn, mist, L.t) * mistBreath;
+      L.mat.uniforms.uColor.value.copy(MIST_A).lerp(MIST_B, dawn * tod.mist.mix);
+      L.mat.uniforms.uWarm.value = tod.mist.warm(dawn);
     }
 
     /* valley clouds — each sheet keeps its own clock, so the sea churns */
     for (const L of cloudLayers) {
       L.mat.uniforms.uTime.value = time * L.speed;
-      L.mat.uniforms.uDensity.value = L.dens * (0.62 + 0.38 * mist);
-      L.mat.uniforms.uColor.value.copy(CLOUD_NIGHT).lerp(CLOUD_DAWN, dawn).multiplyScalar(L.shade);
-      L.mat.uniforms.uWarm.value = dawn * Math.max(0, 1 - L.t * 1.3);
+      L.mat.uniforms.uDensity.value = tod.cloud.density(dawn, mist, L.dens);
+      L.mat.uniforms.uColor.value.copy(CLOUD_A).lerp(CLOUD_B, dawn).multiplyScalar(L.shade);
+      L.mat.uniforms.uWarm.value = tod.cloud.warm(dawn, L.t);
     }
 
     /* motes */
     if (motes) {
       motes.material.uniforms.uTime.value = time;
       motes.material.uniforms.uWind.value = wind;
-      motes.material.uniforms.uOpacity.value = 0.105 * (0.45 + 0.55 * mist) * (1 - 0.5 * dawn);
+      motes.material.uniforms.uOpacity.value = tod.motes.opacity(dawn, mist);
     }
 
     /* god rays billboard around the sun axis */
     if (rays.length) {
-      // must track lighting.js KEYS az/el, which the two modules cannot share
-      const az = (236 - 215 * smoothstep(0, 1, dawn)) * Math.PI / 180;
-      const el = (21 - 14.4 * smoothstep(0, 1, dawn)) * Math.PI / 180;
+      // must track the mode's key light az/el, which lighting.js owns and the
+      // two modules cannot share — see the note on `rays` in timeofday.js
+      const R = tod.rays;
+      const s = smoothstep(0, 1, dawn);
+      const az = (R.az0 + (R.az1 - R.az0) * s) * Math.PI / 180;
+      const el = (R.el0 + (R.el1 - R.el0) * s) * Math.PI / 180;
       const ce = Math.cos(el);
       _sun.set(Math.sin(az) * ce, Math.sin(el), -Math.cos(az) * ce).normalize();
-      const opacity = 0.062 * smoothstep(0.42, 0.95, dawn) * (0.5 + 0.5 * mist);
+      const opacity = R.opacity(dawn, mist);
       for (const r of rays) {
         r.group.quaternion.setFromUnitVectors(_up, _sun);
         _localCam.copy(camera.position);

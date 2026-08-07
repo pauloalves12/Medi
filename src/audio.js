@@ -33,6 +33,12 @@ const PHASE_MIX = {
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
 export function createAudio(ctx) {
+  const tod = (ctx && ctx.tod && ctx.tod.audio) || {};
+  const bedCutoff = tod.filter || ((d) => 820 + d * 6400);
+  // The bed's cutoff before the first ramp. setDawn only fires once the light
+  // has actually moved, so at DAWN this value stands for the whole opening.
+  const bedStart = tod.start === undefined ? 900 : tod.start;
+
   let ac = null;
   let ready = false;
 
@@ -136,7 +142,7 @@ export function createAudio(ctx) {
     // the ambience bed sits behind a lowpass that opens as dawn arrives
     bedFilter = ac.createBiquadFilter();
     bedFilter.type = 'lowpass';
-    bedFilter.frequency.value = 900;
+    bedFilter.frequency.value = bedStart;
     bedFilter.Q.value = 0.4;
     bedFilter.connect(duck);
 
@@ -312,7 +318,9 @@ export function createAudio(ctx) {
   function setDawn(v01) {
     dawnTarget = clamp01(v01);
     if (!ready) return;
-    ramp(bedFilter.frequency, 820 + dawnTarget * 6400, 2.5);
+    // The bed opens as the sun comes up and closes as it goes down — the mode
+    // owns which of those it is.
+    ramp(bedFilter.frequency, bedCutoff(dawnTarget), 2.5);
   }
 
   /* ── public: one-shots ──────────────────────────────────────────────────── */

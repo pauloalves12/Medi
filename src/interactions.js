@@ -32,6 +32,7 @@ function smootherstep(t) {
 
 export function createInteractions({ camera, env, player, ui, audio, state, advance, ctx }) {
   const anchors = env.anchors;
+  const text = (ctx && ctx.tod && ctx.tod.text) || {};
 
   /* ── the three focus targets ────────────────────────────────────────────── */
 
@@ -182,6 +183,9 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
   function onEnterPhase(p) {
     pt = 0;
     holdDown = false; holdT = 0; consumed = false;
+    // Only the breathing phase has lungs; everywhere else the world is not
+    // being breathed with and the signal must be off, not stale.
+    if (p !== 'breathing') state.breathOpen = 0;
     if (p === 'breathing') {
       player.setSpeedScale(0.35);
       breathCycles = 0; breathT = 0; lastBreathSeg = -1; breathDone = false;
@@ -385,6 +389,9 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
           const b = breathAt(breathT);
           env.setOrbBreath(b.scale, b.glow);
           state.breathPhase = breathT / CYCLE;
+          // The world's share of the breath. DUSK reads it for a few percent of
+          // exposure and haze; DAWN's amplitudes are zero and it costs nothing.
+          state.breathOpen = b.scale;
           if (b.seg !== lastBreathSeg) {
             lastBreathSeg = b.seg;
             if (b.seg === 0) audio.breathCue('inhale');
@@ -395,6 +402,7 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
           // Hold the completed guide — all five dots lit — for a beat, so the
           // fifth breath is acknowledged before the ring leaves.
           env.setOrbBreath(0, 0.06);
+          state.breathOpen = 0;
           ui.setBreath('', 0, state.breathTotal, state.breathTotal, breathAnchor);
           breathT += dt;
           if (breathT > 2.6) {
@@ -413,7 +421,9 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
       case 'toShrine': {
         if (!saidValley && pt > 4) {
           saidValley = true;
-          ui.setSubtitle('Go on. The valley is waking.', 5);
+          // The only line the two times of day cannot share: one valley is
+          // waking, the other is being let go of.
+          ui.setSubtitle(text.valley || 'Go on. The valley is waking.', 5);
         }
         // past the crest the reveal speaks for itself — no subtitles here.
         const f = evaluateTarget(TARGETS.toShrine, holdT > 0);
@@ -454,7 +464,7 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
           ui.setSubtitle(null);
         } else if (endingCue === 4 && pt > 37) {
           endingCue = 5;
-          ui.fade(1, 6, '#0b0f1c');
+          ui.fade(1, 6, (ctx && ctx.tod && ctx.tod.fadeOut) || '#0b0f1c');
         }
         break;
       }

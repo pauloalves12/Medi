@@ -15,78 +15,15 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const DEG = Math.PI / 180;
 
-function smoothstep(e0, e1, x) {
-  const t = clamp((x - e0) / (e1 - e0 || 1e-6), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
 /**
- * Keyframed dawn. Everything about the light is read off this table so the
- * transition can be tuned in one place. The horizon warms (glow / fog-facing
- * colours) well before the disc itself clears the ridgeline.
+ * Everything about the light is read off the active mode's keyframe table in
+ * timeofday.js, so a time of day can be tuned in one place — and so the two
+ * experiences differ by a table rather than by a branch in here.
  */
-const KEYS = [
-  {
-    d: 0.00,
-    // A cold moon, raking in low over the walker's left shoulder rather than
-    // sitting high and straight behind them. Low is the whole point: a shallow
-    // key barely touches the open ground — which must stay deep indigo — while
-    // it lights the side of every trunk, rock and blade that faces it.
-    az: 236, el: 21,
-    key: 0x9db1e4, keyI: 1.95,
-    disc: 0xcdd8f5, discI: 0.40, halo: 0.05,
-    zenith: 0x080b18, horizon: 0x131c36, glow: 0x24406b, glowI: 0.35, ground: 0x0a0f1e,
-    // Fill is roughly halved against the key so there is a lit side and a shadow
-    // side. The hemisphere stays saturated indigo so shadows never go grey.
-    hemiSky: 0x44609f, hemiGround: 0x141a2c, hemiI: 0.68,
-    ambient: 0x1f2c56, ambI: 0.40,
-    exposure: 1.01,
-  },
-  {
-    d: 0.34,
-    az: 178, el: 15,
-    key: 0xa8b8e0, keyI: 1.62,
-    disc: 0xd7dcf0, discI: 0.30, halo: 0.10,
-    zenith: 0x101733, horizon: 0x2a2f4e, glow: 0x6a5378, glowI: 0.85, ground: 0x141a30,
-    hemiSky: 0x516196, hemiGround: 0x191d2e, hemiI: 0.82,
-    ambient: 0x27345c, ambI: 0.46,
-    exposure: 1.04,
-  },
-  {
-    d: 0.60,
-    az: 78, el: 2.2,
-    key: 0xffae78, keyI: 1.55,
-    disc: 0xffb277, discI: 0.55, halo: 0.30,
-    zenith: 0x1b2444, horizon: 0x5a4560, glow: 0xff8f52, glowI: 1.00, ground: 0x241f38,
-    hemiSky: 0x6a789f, hemiGround: 0x201c2b, hemiI: 1.02,
-    ambient: 0x333a60, ambI: 0.58,
-    exposure: 1.11,
-  },
-  {
-    d: 0.82,
-    az: 34, el: 4.0,
-    key: 0xffc089, keyI: 2.60,
-    disc: 0xffcf9a, discI: 1.35, halo: 0.55,
-    zenith: 0x25315a, horizon: 0x8a6a70, glow: 0xffab63, glowI: 1.20, ground: 0x352b40,
-    hemiSky: 0x8290ac, hemiGround: 0x2a2431, hemiI: 1.06,
-    ambient: 0x40456a, ambI: 0.54,
-    exposure: 1.13,
-  },
-  {
-    d: 1.00,
-    az: 21, el: 6.6,
-    key: 0xffd2a4, keyI: 3.10,
-    disc: 0xffe0bb, discI: 2.1, halo: 0.72,
-    zenith: 0x2e3c68, horizon: 0xa8848a, glow: 0xffc184, glowI: 1.25, ground: 0x40364a,
-    hemiSky: 0x9aa8c1, hemiGround: 0x322b38, hemiI: 1.06,
-    ambient: 0x484c72, ambI: 0.50,
-    exposure: 1.15,
-  },
-];
 
-const _cA = new THREE.Color(), _cB = new THREE.Color();
+const _cB = new THREE.Color();
 
-function sampleKeys(d, out) {
+function sampleKeys(KEYS, d, out) {
   d = clamp(d, 0, 1);
   let i = 0;
   while (i < KEYS.length - 2 && d > KEYS[i + 1].d) i++;
@@ -117,7 +54,10 @@ const GradeShader = {
     uVignette: { value: 0.32 },
     uAberration: { value: 0.0006 },
     uGrain: { value: 0.013 },
-    uDawn: { value: 0 },
+    uShadowTint: { value: new THREE.Color(0.034, 0.042, 0.078) },
+    uShadowFade: { value: 1.0 },
+    uHighTint: { value: new THREE.Color(1.048, 0.997, 0.922) },
+    uHighMix: { value: 0.45 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -126,7 +66,9 @@ const GradeShader = {
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
     uniform vec2 uResolution;
-    uniform float uTime, uVignette, uAberration, uGrain, uDawn;
+    uniform float uTime, uVignette, uAberration, uGrain;
+    uniform vec3 uShadowTint, uHighTint;
+    uniform float uShadowFade, uHighMix;
     varying vec2 vUv;
 
     float hash(vec2 p){
@@ -149,9 +91,10 @@ const GradeShader = {
 
       float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
 
-      // lift the shadows toward indigo, push the highlights toward gold
-      col += vec3(0.034, 0.042, 0.078) * (1.0 - smoothstep(0.0, 0.42, l)) * (1.0 - 0.35 * uDawn);
-      col = mix(col, col * vec3(1.048, 0.997, 0.922), smoothstep(0.30, 0.92, l) * (0.45 + 0.55 * uDawn));
+      // lift the shadows toward the mode's cold end, push the highlights toward
+      // its warm one — indigo/gold at dawn, violet-blue/peach at dusk
+      col += uShadowTint * (1.0 - smoothstep(0.0, 0.42, l)) * uShadowFade;
+      col = mix(col, col * uHighTint, smoothstep(0.30, 0.92, l) * uHighMix);
 
       // A very gentle S: a stronger one was crushing the shadow detail that the
       // key light is there to reveal.
@@ -180,6 +123,8 @@ const GradeShader = {
 
 export function createLighting(scene, camera, renderer, ctx) {
   const preset = ctx.preset;
+  const tod = ctx.tod;
+  const KEYS = tod.keys;
   let time = 0;
 
   const K = {
@@ -188,7 +133,7 @@ export function createLighting(scene, camera, renderer, ctx) {
     horizon: new THREE.Color(), glow: new THREE.Color(), ground: new THREE.Color(),
     hemiSky: new THREE.Color(), hemiGround: new THREE.Color(), ambient: new THREE.Color(),
   };
-  sampleKeys(0, K);
+  sampleKeys(KEYS, 0, K);
 
   /* ── sky dome ───────────────────────────────────────────────────────────── */
 
@@ -287,13 +232,13 @@ export function createLighting(scene, camera, renderer, ctx) {
   scene.add(ambient);
 
   // a faint cold bounce from the valley so shadowed forms keep some shape
-  const bounce = new THREE.DirectionalLight(0x5b6da0, 0.16);
+  const bounce = new THREE.DirectionalLight(tod.bounce.color, 0.16);
   bounce.position.set(-0.6, -0.25, 1);
   scene.add(bounce);
 
   /* ── lantern light ──────────────────────────────────────────────────────── */
 
-  const lanternLight = new THREE.PointLight(0xffb066, 0, 20, 2);
+  const lanternLight = new THREE.PointLight(tod.lantern.color, 0, 20, 2);
 
   const glowCanvas = document.createElement('canvas');
   glowCanvas.width = glowCanvas.height = 96;
@@ -372,7 +317,9 @@ export function createLighting(scene, camera, renderer, ctx) {
   function update(dt, state) {
     time += dt;
     const dawn = state ? clamp(state.dawn, 0, 1) : 0;
-    sampleKeys(dawn, K);
+    // -0.5..0.5 around the middle of a breath; zero whenever nobody is breathing
+    const breath = state ? clamp(state.breathOpen, 0, 1) - 0.5 : 0;
+    sampleKeys(KEYS, dawn, K);
 
     // celestial direction — az measured from -Z, swinging around to the valley
     const azR = K.az * DEG, elR = K.el * DEG;
@@ -388,7 +335,7 @@ export function createLighting(scene, camera, renderer, ctx) {
     skyUniforms.uGlowI.value = K.glowI;
     skyUniforms.uDiscI.value = K.discI;
     skyUniforms.uHalo.value = K.halo;
-    skyUniforms.uNight.value = 1.0 - smoothstep(0.02, 0.30, dawn);
+    skyUniforms.uNight.value = tod.sky.night(dawn);
     sky.position.copy(camera.position);
 
     // the shadow-casting direction never dips below the ground plane
@@ -408,27 +355,35 @@ export function createLighting(scene, camera, renderer, ctx) {
     ambient.color.copy(K.ambient);
     ambient.intensity = K.ambI;
     // With the fill pulled down, this is what keeps the shadow side shaped
-    // indigo instead of a dead silhouette.
-    bounce.intensity = 0.22 + 0.18 * dawn;
+    // instead of a dead silhouette.
+    bounce.intensity = tod.bounce.i(dawn);
 
-    // lantern: eased level plus a low-frequency, non-strobing flicker
+    // lantern: eased level plus a low-frequency, non-strobing flicker. How far
+    // that light carries is the mode's call — a lantern in daylight is an
+    // object, a lantern at sunset is the light source.
     lanternLevel += clamp(lanternTarget - lanternLevel, -dt * 1.2, dt * 0.7);
     const flick = 1
       + 0.048 * Math.sin(time * 2.31)
       + 0.026 * Math.sin(time * 5.07 + 1.9)
       + 0.014 * Math.sin(time * 9.73 + 0.4);
-    lanternLight.intensity = lanternLevel * 42.0 * flick;
-    glowMat.opacity = lanternLevel * 0.55 * flick;
+    lanternLight.intensity = lanternLevel * tod.lantern.key(dawn) * flick;
+    glowMat.opacity = lanternLevel * tod.lantern.glow(dawn) * flick;
     glowSprite.scale.setScalar(0.78 + 0.22 * lanternLevel * flick);
 
+    const g = tod.grade;
     gradePass.uniforms.uTime.value = time;
-    gradePass.uniforms.uDawn.value = dawn;
-    gradePass.uniforms.uVignette.value = 0.34 - 0.08 * dawn;
+    gradePass.uniforms.uVignette.value = g.vignette(dawn);
+    gradePass.uniforms.uShadowTint.value.setRGB(g.shadowTint[0], g.shadowTint[1], g.shadowTint[2]);
+    gradePass.uniforms.uShadowFade.value = g.shadowFade(dawn);
+    gradePass.uniforms.uHighTint.value.setRGB(g.highTint[0], g.highTint[1], g.highTint[2]);
+    gradePass.uniforms.uHighMix.value = g.highMix(dawn);
 
-    renderer.toneMappingExposure = K.exposure;
+    // The breath's only claim on the light: a fraction of a stop, opening on
+    // the inhale. At DAWN's amplitude of zero this is the bare exposure.
+    renderer.toneMappingExposure = K.exposure * (1 + tod.breath.exposure * breath);
     if (bloomPass) {
-      bloomPass.strength = 0.30 + 0.09 * smoothstep(0.55, 1.0, dawn);
-      bloomPass.threshold = 0.92 - 0.07 * dawn;
+      bloomPass.strength = g.bloom(dawn);
+      bloomPass.threshold = g.bloomThreshold(dawn);
     }
   }
 

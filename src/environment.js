@@ -218,6 +218,18 @@ function grainTexture(size, seed) {
   return t;
 }
 
+/**
+ * A mode's hand on a baked palette. Every colour in this file was mixed for a
+ * night, so daylight needs to lift them past 1.0 — which a hex cannot express.
+ * Arrays are read as raw linear multipliers; a hex is read as a colour.
+ */
+function worldTint(v) {
+  const c = new THREE.Color();
+  if (Array.isArray(v)) c.setRGB(v[0], v[1], v[2]);
+  else c.set(v === undefined ? 0xffffff : v);
+  return c;
+}
+
 function radialTexture(size, stops) {
   const [c, g] = canvas2d(size);
   const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
@@ -282,6 +294,7 @@ function flameTexture() {
 
 export function createEnvironment(scene, ctx) {
   const preset = ctx.preset;
+  const tod = ctx.tod;
   const root = new THREE.Group();
   root.name = 'environment';
   scene.add(root);
@@ -518,7 +531,11 @@ export function createEnvironment(scene, ctx) {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
 
+    // The vertex palette above is the rock and the frost. `world.ground` is the
+    // mode's hand on it — identity at dawn, a breath of warmth on the snow in
+    // daylight — multiplied in rather than baked so the palette stays one thing.
     const mat = new THREE.MeshStandardMaterial({
+      color: worldTint(tod.world.ground),
       vertexColors: true, roughness: 0.95, metalness: 0.0, dithering: true,
     });
     // Ground detail runs at two scales an order of magnitude apart so a lantern
@@ -586,7 +603,7 @@ export function createEnvironment(scene, ctx) {
     stoneUniforms = {
       uFront: { value: -0.2 },
       uStrength: { value: 0 },
-      uGlowColor: { value: new THREE.Color(0xffa960) },
+      uGlowColor: { value: new THREE.Color(tod.path.color) },
     };
 
     const prevCompile = mat.onBeforeCompile;
@@ -730,14 +747,17 @@ export function createEnvironment(scene, ctx) {
     }
     const foliageGeo = mergeGeometries(shells);
     const foliageMat = new THREE.MeshStandardMaterial({
-      map: texNeedle, color: 0x233229, roughness: 0.95, metalness: 0.0,
+      map: texNeedle, color: worldTint(tod.world.foliage).multiply(new THREE.Color(0x233229)),
+      roughness: 0.95, metalness: 0.0,
       alphaTest: 0.34, side: THREE.DoubleSide,
     });
     addSway(foliageMat, 0.16, 1.6, 7.0);
 
     const trunkGeo = new THREE.CylinderGeometry(0.10, 0.26, 6.6, 6, 1);
     trunkGeo.translate(0, 3.3, 0);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x2a2119, roughness: 0.94 });
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: worldTint(tod.world.bark).multiply(new THREE.Color(0x2a2119)), roughness: 0.94,
+    });
     addSway(trunkMat, 0.09, 1.9, 7.0);
 
     // placement: a ring that frames the sanctuary without ever masking the valley
@@ -814,7 +834,7 @@ export function createEnvironment(scene, ctx) {
   function buildGrass() {
     const count = preset.grassCount;
     const geo = bladeGeometry();
-    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+    const mat = new THREE.MeshLambertMaterial({ color: worldTint(tod.world.grass), side: THREE.DoubleSide });
     addSway(mat, 0.27, 1.7, 1.0, 0.58);
 
     const mesh = new THREE.InstancedMesh(geo, mat, count);
@@ -984,7 +1004,9 @@ export function createEnvironment(scene, ctx) {
       g.setAttribute('color', new THREE.BufferAttribute(col, 3));
       variants.push(g);
     }
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0, flatShading: true });
+    const mat = new THREE.MeshStandardMaterial({
+      color: worldTint(tod.world.rock), vertexColors: true, roughness: 0.9, metalness: 0.0, flatShading: true,
+    });
     addSurfaceDetail(mat, {
       fine: 0.18, broad: 0.30, damp: 0.30, rough: 0.18,
       sFine: 2.2, sBroad: 0.14, tint: [0.007, 0.017, 0.006],   // lichen mottle
@@ -1109,8 +1131,8 @@ export function createEnvironment(scene, ctx) {
       uniforms: {
         uTime: { value: 0 },
         uGlow: { value: 0.5 },
-        uColor: { value: new THREE.Color(0xffcf9e) },
-        uDeep: { value: new THREE.Color(0xd98a52) },
+        uColor: { value: new THREE.Color(tod.orb.core) },
+        uDeep: { value: new THREE.Color(tod.orb.deep) },
       },
       vertexShader: `
         varying vec3 vN; varying vec3 vV; varying vec3 vP;
@@ -1155,8 +1177,16 @@ export function createEnvironment(scene, ctx) {
       uniforms: {
         uTime: { value: 0 },
         uGlow: { value: 0.5 },
-        uColor: { value: new THREE.Color(0xffd9a8) },
-        uRim: { value: new THREE.Color(0x9fc4ff) },
+        uColor: { value: new THREE.Color(tod.orb.shell) },
+        uRim: { value: new THREE.Color(tod.orb.rim) },
+        // How the shell divides itself between a fresnel rim and a body veil,
+        // and how sharply that rim falls off. Against a night valley a tight
+        // rim reads as a glow; against a bright sky the same rim is a hard ring
+        // and the sphere turns into a glass bauble, so daylight wants the rim
+        // spread wide and soft instead.
+        uEdge: { value: tod.orb.edge },
+        uEdgePow: { value: tod.orb.edgePow },
+        uVeil: { value: tod.orb.veil },
       },
       vertexShader: `
         varying vec3 vN; varying vec3 vV; varying vec3 vP;
@@ -1169,13 +1199,14 @@ export function createEnvironment(scene, ctx) {
         }`,
       fragmentShader: `
         uniform float uTime; uniform float uGlow; uniform vec3 uColor; uniform vec3 uRim;
+        uniform float uEdge; uniform float uEdgePow; uniform float uVeil;
         varying vec3 vN; varying vec3 vV; varying vec3 vP;
         void main(){
           // max() guards the base: rounding can push abs(dot()) a hair past 1.0,
           // and pow() with a negative base is undefined in GLSL — some drivers
           // return NaN there, which lands on screen as an arbitrary bright pixel.
           // On hardware that already rounds the other way this is a no-op.
-          float f = pow(max(0.0, 1.0 - abs(dot(normalize(vN), normalize(vV)))), 3.1);
+          float f = pow(max(0.0, 1.0 - abs(dot(normalize(vN), normalize(vV)))), uEdgePow);
           // Three slow, unequal periods: the shell breathes rather than ticks,
           // and the veils never line up into stripes.
           float band = 0.34 * sin(vP.y * 9.0 + uTime * 0.29)
@@ -1183,7 +1214,7 @@ export function createEnvironment(scene, ctx) {
                      + 0.14 * sin(vP.z * 7.1 + uTime * 0.11);
           vec3 c = mix(uColor, uRim, 0.40 + 0.30 * (band + 0.5));
           float veil = 0.030 + 0.055 * (0.5 + band);
-          float a = f * (0.22 + 0.62 * uGlow) + veil * uGlow;
+          float a = f * (0.22 + 0.62 * uGlow) * uEdge + veil * uGlow * uVeil;
           gl_FragColor = vec4(c * (0.34 + 0.92 * uGlow), a);
         }`,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.FrontSide,
@@ -1192,7 +1223,7 @@ export function createEnvironment(scene, ctx) {
     orb.add(orbShell);
 
     orbHaloMat = new THREE.SpriteMaterial({
-      map: texHalo, color: 0xf3c193, transparent: true, blending: THREE.AdditiveBlending,
+      map: texHalo, color: tod.orb.halo, transparent: true, blending: THREE.AdditiveBlending,
       depthWrite: false, opacity: 0.5,
     });
     orbHalo = new THREE.Sprite(orbHaloMat);
@@ -1348,22 +1379,25 @@ export function createEnvironment(scene, ctx) {
   const ridgeMats = [];
 
   function buildRidges() {
-    // Atmospheric perspective, layer by layer: each ridge is paler and lower in
-    // contrast than the one in front of it, and each dissolves upward from a
-    // hazy foot into a top that is already most of the way to the sky. That
-    // vertical drift is what stops four flat bands collapsing into one mass.
-    // Atmospheric perspective, layer by layer: each ridge is paler and lower in
-    // contrast than the one in front of it. `top` is the rock at the ridge line
-    // and `haze` is what the last stretch below the silhouette fades into — the
-    // farther the layer, the closer that is to the sky itself, so the farthest
-    // ridge dissolves at its own edge instead of printing a hard blue stripe
-    // against the pines.
-    const LAYERS = [
-      { r: 300, h: 62, base: -80, foot: -6, seed: 3.1, freq: 3.4, col: 0x39466a, mid: 0x2b365a, top: 0x1a2340, haze: 0x111a31 },
-      { r: 620, h: 132, base: -150, foot: -8, seed: 8.7, freq: 2.6, col: 0x525e8a, mid: 0x424d76, top: 0x2d3758, haze: 0x1b2440 },
-      { r: 1050, h: 232, base: -250, foot: -10, seed: 15.2, freq: 2.0, col: 0x6b749c, mid: 0x59628c, top: 0x3f486f, haze: 0x242d4d },
-      { r: 1600, h: 378, base: -380, foot: -12, seed: 22.9, freq: 1.5, col: 0x757ea8, mid: 0x646d99, top: 0x454e78, haze: 0x2a3354 },
+    // Atmospheric perspective, layer by layer: each ridge is lower in contrast
+    // than the one in front of it, and each drifts vertically from a foot into
+    // a top that is most of the way to the sky. That vertical drift is what
+    // stops four flat bands collapsing into one mass. `top` is the rock at the
+    // ridge line and `haze` is what the last stretch below the silhouette fades
+    // into, so a layer dissolves at its own edge rather than printing a hard
+    // stripe against the pines.
+    //
+    // Which direction that drift runs is the whole difference between the two
+    // times of day, and is why the palette is the mode's rather than this
+    // file's: against a night sky a ridge fades *down* toward black, against a
+    // daylight one it fades *up* toward white. The geometry is identical.
+    const SHAPE = [
+      { r: 300, h: 62, base: -80, foot: -6, seed: 3.1, freq: 3.4 },
+      { r: 620, h: 132, base: -150, foot: -8, seed: 8.7, freq: 2.6 },
+      { r: 1050, h: 232, base: -250, foot: -10, seed: 15.2, freq: 2.0 },
+      { r: 1600, h: 378, base: -380, foot: -12, seed: 22.9, freq: 1.5 },
     ];
+    const LAYERS = SHAPE.map((s, i) => Object.assign({}, s, tod.ridge.layers[i]));
     const layers = ctx.quality === 'low' ? LAYERS.slice(1) : LAYERS;
     const segs = ctx.quality === 'low' ? 120 : 220;
 
@@ -1421,8 +1455,8 @@ export function createEnvironment(scene, ctx) {
 
   /* ── public API ────────────────────────────────────────────────────────── */
 
-  const _tintNight = new THREE.Color(0x8f9ec4);
-  const _tintDawn = new THREE.Color(0xffd8bc);
+  const _tintA = new THREE.Color(tod.ridge.a);
+  const _tintB = new THREE.Color(tod.ridge.b);
   const _tmpColor = new THREE.Color();
   const _sc = new THREE.Vector3();
 
@@ -1448,6 +1482,7 @@ export function createEnvironment(scene, ctx) {
     windUniforms.uTime.value = time;
     const wind = state ? clamp(state.windGust, 0, 1.2) : 0.4;
     windUniforms.uWind.value = 0.25 + 0.75 * wind;
+    const dawn = state ? clamp(state.dawn, 0, 1) : 0;
 
     /* path glow — sweeps forward from the lantern over ~3s */
     const rate = dt / 2.6;
@@ -1455,20 +1490,22 @@ export function createEnvironment(scene, ctx) {
     const e = smootherstep(pathGlow.raw);
     if (stoneUniforms) {
       stoneUniforms.uFront.value = U_LANTERN - 0.04 + (1.12 - U_LANTERN) * e;
-      // Daylight overwhelms it: the golden path is a pre-dawn guide and should
-      // be all but gone by the time the sun is in the valley.
-      const daylight = state ? clamp(state.dawn, 0, 1) : 0;
+      // How much of the golden path survives the ambient light is the mode's
+      // call: at dawn it is a pre-dawn guide that daylight overwhelms, at dusk
+      // it is lit into daylight that hides it and returns as the light goes.
       stoneUniforms.uStrength.value = smoothstep(0.0, 0.14, pathGlow.raw) * (0.55 + 0.45 * e)
         * (0.9 + 0.1 * Math.sin(time * 0.9)) * 0.44
-        * (1 - 0.94 * smoothstep(0.12, 0.72, daylight));
+        * tod.path.strength(dawn);
     }
 
     /* lantern */
+    // The flame itself stays readable in either mode — what the mode decides is
+    // how much the paper shade glows and how far the light carries (lighting.js).
     lanternState.lit += clamp(lanternState.target - lanternState.lit, -dt * 0.9, dt * 0.55);
     const flick = 0.86 + 0.10 * Math.sin(time * 2.7) + 0.06 * Math.sin(time * 5.9 + 1.3)
       + 0.04 * Math.sin(time * 11.3 + 2.9);
-    if (paperMat) paperMat.emissiveIntensity = lanternState.lit * 1.5 * flick;
-    if (flameMat) flameMat.opacity = lanternState.lit * 0.85 * flick;
+    if (paperMat) paperMat.emissiveIntensity = lanternState.lit * tod.lantern.emissive(dawn) * flick;
+    if (flameMat) flameMat.opacity = lanternState.lit * tod.lantern.flame(dawn) * flick;
     if (flameGroup) {
       const s = lanternState.lit * (0.92 + 0.14 * Math.sin(time * 4.1 + 0.7));
       flameGroup.scale.set(s, s * (0.9 + 0.2 * Math.sin(time * 6.3)), s);
@@ -1488,13 +1525,16 @@ export function createEnvironment(scene, ctx) {
     _sc.set(s, s, s);
     orbShell.scale.copy(_sc);
     orbCore.scale.setScalar(s * (0.86 + 0.20 * orbState.glow));
-    const glow = (0.30 + 0.70 * orbState.glow) * (0.10 + 0.90 * act);
+    // Held down against a bright sky: an additive core at DAWN's level in
+    // daylight is a white hole rather than a light.
+    const glow = (0.30 + 0.70 * orbState.glow) * (0.10 + 0.90 * act) * tod.orb.glow(dawn);
     orbShellMat.uniforms.uGlow.value = glow;
     orbShellMat.uniforms.uTime.value = time;
     orbCoreMat.uniforms.uGlow.value = glow;
     orbCoreMat.uniforms.uTime.value = time;
-    orbHalo.scale.setScalar(1.45 + 1.75 * glow * s);
-    orbHaloMat.opacity = (0.14 + 0.56 * glow) * (0.25 + 0.75 * act);
+    const haloK = tod.orb.haloScale(dawn);
+    orbHalo.scale.setScalar((1.45 + 1.75 * glow * s) * haloK);
+    orbHaloMat.opacity = (0.14 + 0.56 * glow) * (0.25 + 0.75 * act) * haloK;
 
     /* bell */
     if (bellSwing.amp > 0.0001) {
@@ -1509,21 +1549,20 @@ export function createEnvironment(scene, ctx) {
     bellSwing.glow = Math.max(0, bellSwing.glow - dt * 1.05);
     if (bellMat) {
       bellRing.value = bellSwing.glow * bellSwing.glow * 0.55;
-      // Dark bronze before dawn — there is no light at the shrine to reflect.
-      bellMat.envMapIntensity = 0.36 + (state ? state.dawn * 1.30 : 0) + bellSwing.glow * 0.12;
+      // Dark bronze before dawn — there is no light at the shrine to reflect —
+      // and the reverse at dusk, where it has all day and then loses it.
+      bellMat.envMapIntensity = tod.bell.env(dawn) + bellSwing.glow * 0.12;
     }
 
-    /* distant ridges lift toward the dawn sky */
-    const dawn = state ? clamp(state.dawn, 0, 1) : 0;
+    /* distant ridges answer the light layer by layer */
     for (let i = 0; i < ridgeMats.length; i++) {
       const rl = ridgeMats[i];
       const far = clamp((rl.r - 250) / 1400, 0, 1);
-      // Distance both warms a ridge toward the dawn and washes it toward the
-      // sky, so the spread between the nearest and the farthest layer widens as
-      // the light comes up instead of everything brightening together.
-      _tmpColor.copy(_tintNight).lerp(_tintDawn, dawn * (0.22 + 0.78 * far));
-      const b = (0.41 + 0.53 * dawn) * (0.70 + 0.66 * far);
-      rl.mat.color.copy(_tmpColor).multiplyScalar(b);
+      // Distance both carries a ridge toward the mode's warm end and changes how
+      // much of the light it keeps, so the spread between the nearest and the
+      // farthest layer widens rather than everything moving together.
+      _tmpColor.copy(_tintA).lerp(_tintB, tod.ridge.tint(dawn, far));
+      rl.mat.color.copy(_tmpColor).multiplyScalar(tod.ridge.bright(dawn, far));
     }
   }
 
