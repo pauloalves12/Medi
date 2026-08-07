@@ -40,6 +40,21 @@ http://localhost:8080/?quality=low
 `low` drops shadows, bloom, the god-ray meshes and most mist layers, and cuts
 grass and particle counts — it is the fallback for phones and integrated GPUs.
 
+### Known limitations
+
+**The walk out to the dawn can graze a shrine upright.** Ringing the bell hands
+control to an authored settle onto the overlook south of the shrine, so the
+sunrise is composed the same way every time. The curve is bowed clear of the
+bell, which you can ring from either side of, but the shrine is a ring of four
+posts and you can strike from anywhere around it — so from roughly one ringing
+position in six the glide passes through a post for two or three frames. The
+posts have no collision during normal walking either, so this is the existing
+behaviour rather than a new one; solving it properly needs real path planning,
+which is more machinery than the moment justifies.
+
+**Green speckles around the orb on some iPads** are not diagnosed. See the note
+in `src/environment.js` above the orb shell shader.
+
 ## Architecture
 
 Ten source files, plain ES modules, no bundler, no framework.

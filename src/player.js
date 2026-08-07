@@ -27,7 +27,13 @@ const SWAY_VERT = 0.006;      // 6 mm
 
 const STICK_RADIUS = 58;      // px
 
+const CINE_TAU = 0.5;         // s — how fast the bob unwinds into a glide
+
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function smootherstep(t) {
+  t = clamp(t, 0, 1);
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
 function shortestAngle(a) {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
@@ -60,6 +66,13 @@ export function createPlayer(camera, canvas, ctx) {
   // assisted look
   const assistTarget = new THREE.Vector3();
   let assistWeight = 0, assistActive = false;
+
+  // authored viewpoint move — the settle onto the shrine's overlook after the
+  // bell, so the dawn is composed from the same place every time
+  const cineFrom = new THREE.Vector3();
+  const cineTo = new THREE.Vector3();
+  const cineVia = new THREE.Vector3();
+  let cineT = 0, cineDur = 0, cineActive = false, cineLock = false, cineBow = false;
 
   // scratch — never allocate in update()
   const desired = new THREE.Vector3();
@@ -123,8 +136,12 @@ export function createPlayer(camera, canvas, ctx) {
 
   let stickEl = null, knobEl = null;
   let lastStickTransform = '', lastKnobTransform = '', stickShown = false;
-  let moveId = null, lookId = null;
-  let moveOX = 0, moveOY = 0, lookLX = 0, lookLY = 0;
+
+  // Each thumb owns its own slot, keyed by pointerId. Nothing but the pointer
+  // that claimed a slot can drive it or clear it, so the two thumbs can never
+  // write into each other's state.
+  const moveP = { id: null, ox: 0, oy: 0 };
+  const lookP = { id: null, lx: 0, ly: 0 };
 
   function buildStick() {
     stickEl = document.createElement('div');
@@ -152,53 +169,92 @@ export function createPlayer(camera, canvas, ctx) {
     if (t !== lastKnobTransform) { knobEl.style.transform = t; lastKnobTransform = t; }
   }
 
-  function onTouchStart(e) {
-    if (!enabled) return;
-    const half = window.innerWidth * 0.5;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i];
-      if (t.clientX < half && moveId === null) {
-        moveId = t.identifier; moveOX = t.clientX; moveOY = t.clientY;
-        showStick(t.clientX, t.clientY);
-      } else if (lookId === null) {
-        lookId = t.identifier; lookLX = t.clientX; lookLY = t.clientY;
-      }
-    }
+  // Capture routes every later move/up for this finger to the canvas, even once
+  // it has slid out of the half it started in or off the screen entirely — which
+  // is what stops a wandering thumb from silently losing its slot.
+  function capture(id) {
+    try { canvas.setPointerCapture(id); } catch (e) { /* pointer already gone */ }
+  }
+  function uncapture(id) {
+    try {
+      if (canvas.hasPointerCapture && canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
+    } catch (e) { /* already released */ }
   }
 
-  function onTouchMove(e) {
-    if (moveId === null && lookId === null) return;
+  function releaseMove() {
+    if (moveP.id === null) return;
+    uncapture(moveP.id);
+    moveP.id = null;
+    moveX = 0; moveZ = 0;
+    hideStick();
+  }
+  function releaseLook() {
+    if (lookP.id === null) return;
+    uncapture(lookP.id);
+    lookP.id = null;
+  }
+  function releaseTouch() { releaseMove(); releaseLook(); }
+
+  function onPointerDown(e) {
+    if (!enabled || e.pointerType === 'mouse') return;
+    // Suppress the compatibility mouse events this would otherwise synthesise,
+    // so a tap cannot also arrive at the desktop press handlers.
     e.preventDefault();
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i];
-      if (t.identifier === moveId) {
-        let dx = t.clientX - moveOX, dy = t.clientY - moveOY;
-        const len = Math.hypot(dx, dy);
-        if (len > STICK_RADIUS) { dx *= STICK_RADIUS / len; dy *= STICK_RADIUS / len; }
-        moveKnob(dx, dy);
-        moveX = clamp(dx / STICK_RADIUS, -1, 1);
-        moveZ = clamp(-dy / STICK_RADIUS, -1, 1);
-      } else if (t.identifier === lookId) {
-        pendYaw -= (t.clientX - lookLX) * TOUCH_SENS;
-        pendPitch -= (t.clientY - lookLY) * TOUCH_SENS;
-        lookLX = t.clientX; lookLY = t.clientY;
-      }
+
+    if (e.clientX < window.innerWidth * 0.5) {
+      // A fresh thumb in the movement half always takes the movement slot. Any
+      // previous owner is either gone or has been abandoned, and there is no
+      // reliable way to tell those apart — so we never let a stale id keep the
+      // slot, which is what makes movement unconditionally reacquirable.
+      releaseMove();
+      moveP.id = e.pointerId; moveP.ox = e.clientX; moveP.oy = e.clientY;
+      moveX = 0; moveZ = 0;
+      showStick(e.clientX, e.clientY);
+      capture(e.pointerId);
+    } else {
+      releaseLook();
+      lookP.id = e.pointerId; lookP.lx = e.clientX; lookP.ly = e.clientY;
+      capture(e.pointerId);
     }
   }
 
-  function onTouchEnd(e) {
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i];
-      if (t.identifier === moveId) { moveId = null; moveX = 0; moveZ = 0; hideStick(); }
-      else if (t.identifier === lookId) { lookId = null; }
+  function onPointerMove(e) {
+    if (e.pointerId === moveP.id) {
+      let dx = e.clientX - moveP.ox, dy = e.clientY - moveP.oy;
+      const len = Math.hypot(dx, dy);
+      if (len > STICK_RADIUS) { dx *= STICK_RADIUS / len; dy *= STICK_RADIUS / len; }
+      moveKnob(dx, dy);
+      moveX = clamp(dx / STICK_RADIUS, -1, 1);
+      moveZ = clamp(-dy / STICK_RADIUS, -1, 1);
+    } else if (e.pointerId === lookP.id) {
+      pendYaw -= (e.clientX - lookP.lx) * TOUCH_SENS;
+      pendPitch -= (e.clientY - lookP.ly) * TOUCH_SENS;
+      lookP.lx = e.clientX; lookP.ly = e.clientY;
     }
   }
+
+  // pointerup, pointercancel and lostpointercapture all land here. Releasing a
+  // slot is idempotent and matched on id, so the duplicate events a normal lift
+  // produces cost nothing and an interrupted gesture still frees exactly one.
+  function onPointerEnd(e) {
+    if (e.pointerId === moveP.id) releaseMove();
+    else if (e.pointerId === lookP.id) releaseLook();
+  }
+
+  function onVisibility() { if (document.hidden) releaseTouch(); }
 
   if (ctx.isTouch) {
-    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: false });
-    window.addEventListener('touchend', onTouchEnd, { passive: true });
-    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerEnd);
+    canvas.addEventListener('pointercancel', onPointerEnd);
+    canvas.addEventListener('lostpointercapture', onPointerEnd);
+    // If capture never took, the canvas may never see the lift — the window
+    // still does, and a second release of an already-free slot is harmless.
+    window.addEventListener('pointerup', onPointerEnd);
+    window.addEventListener('pointercancel', onPointerEnd);
+    window.addEventListener('blur', releaseTouch);
+    document.addEventListener('visibilitychange', onVisibility);
   }
 
   /* ── update ─────────────────────────────────────────────────────────────── */
@@ -227,6 +283,46 @@ export function createPlayer(camera, canvas, ctx) {
         yaw += shortestAngle(tYaw - yaw) * k;
         pitch += (tPitch - pitch) * k;
       }
+    }
+
+    // --- authored viewpoint move (overrides walking entirely) ---
+    if (cineLock) {
+      if (cineActive) {
+        cineT += dt;
+        const u = smootherstep(cineDur > 0 ? cineT / cineDur : 1);
+        if (cineBow) {
+          // Quadratic through a control point, so the walk curves around what
+          // stands between here and there rather than straight through it.
+          const iu = 1 - u, a = iu * iu, b = 2 * iu * u, c = u * u;
+          position.x = a * cineFrom.x + b * cineVia.x + c * cineTo.x;
+          position.z = a * cineFrom.z + b * cineVia.z + c * cineTo.z;
+        } else {
+          position.x = cineFrom.x + (cineTo.x - cineFrom.x) * u;
+          position.z = cineFrom.z + (cineTo.z - cineFrom.z) * u;
+        }
+        if (env && env.getGroundHeight) {
+          const g = env.getGroundHeight(position.x, position.z);
+          if (Number.isFinite(g)) position.y = g;
+        }
+        if (cineT >= cineDur) cineActive = false;
+      }
+      velX = 0; velZ = 0; speed = 0;
+      // A glide is not a walk: let the footfall bob unwind rather than stepping.
+      bobAmount += (0 - bobAmount) * (1 - Math.exp(-dt / CINE_TAU));
+
+      const feetYC = Number.isFinite(position.y) ? position.y : 0;
+      if (!groundInit) { groundY = feetYC; groundInit = true; }
+      groundY += (feetYC - groundY) * (1 - Math.exp(-dt / GROUND_TAU));
+
+      swayT += dt;
+      const swayC = Math.sin(swayT * (Math.PI * 2 / SWAY_PERIOD)) * SWAY_VERT;
+      const swayRollC = Math.sin(swayT * (Math.PI * 2 / (SWAY_PERIOD * 1.7))) * 0.0014;
+      camera.position.set(position.x, groundY + EYE_HEIGHT + swayC, position.z);
+      camera.rotation.set(pitch, yaw, swayRollC);
+
+      api.isMoving = false;
+      api.speed01 = 0;
+      return;
     }
 
     // --- movement intent ---
@@ -312,12 +408,35 @@ export function createPlayer(camera, canvas, ctx) {
 
     setEnabled(on) {
       enabled = !!on;
+      // An authored move is a temporary seizure of control, and this is the one
+      // call that says who has control now — so it always ends here. Otherwise a
+      // cinematic that ran once would hold the walker still for good.
+      cineActive = false; cineLock = false;
       if (!enabled) {
         releaseAll();
         moveX = 0; moveZ = 0;
-        moveId = null; lookId = null;
-        hideStick();
+        releaseTouch();
       }
+    },
+
+    /**
+     * Glide the standing point to an authored spot over `seconds`, holding all
+     * walking input until movement is re-enabled. Look stays live throughout,
+     * so lookAtPoint can compose the view while this runs.
+     */
+    beginCinematic(target, seconds, via) {
+      if (!target) return;
+      cineFrom.copy(position);
+      cineTo.copy(target);
+      cineBow = !!via;
+      if (via) cineVia.copy(via);
+      cineDur = Math.max(0.001, seconds || 2.0);
+      cineT = 0;
+      cineActive = true;
+      cineLock = true;
+      releaseAll();
+      moveX = 0; moveZ = 0;
+      releaseTouch();
     },
 
     /** Blend the gaze toward a world point. weight 0 = full player control. */

@@ -40,8 +40,11 @@
  *  player.js       createPlayer(camera, canvas, ctx) -> {
  *      update(dt, env, state)
  *      position: Vector3
- *      setEnabled(on: boolean)
+ *      setEnabled(on: boolean)                   // also ends any authored move
  *      lookAtPoint(v: Vector3 | null, weight01)  // gentle assisted look
+ *      beginCinematic(target: Vector3, seconds, via?: Vector3)
+ *                                                // authored glide; suspends
+ *                                                // walking, look stays live
  *      isMoving: boolean
  *      speed01: number
  *    }

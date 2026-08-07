@@ -18,6 +18,7 @@ const INHALE = 4.5, HOLD_B = 1.5, EXHALE = 6.5, REST = 2.0;
 const CYCLE = INHALE + HOLD_B + EXHALE + REST;
 
 const BELL_TURN = 4.0;          // s to be turned toward the valley
+const SETTLE_SECONDS = 2.1;     // s to glide onto the authored dawn overlook
 
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 function smoothstep(e0, e1, x) {
@@ -34,10 +35,13 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
 
   /* ── the three focus targets ────────────────────────────────────────────── */
 
+  // The bell hangs inside a four-post shrine, so the places you can physically
+  // stand and still see it are fewer than for the lantern or the orb — it needs
+  // the most reach, not the least.
   const TARGETS = {
     lantern:  { point: anchors.lantern, label: 'Light the lantern',    reach: 3.0 },
     toOrb:    { point: anchors.orb,     label: 'Breathe with the light', reach: 3.2 },
-    toShrine: { point: anchors.bell,    label: 'Ring the bell',        reach: 2.6 },
+    toShrine: { point: anchors.bell,    label: 'Ring the bell',        reach: 3.4 },
   };
 
   /* ── orb → screen, for anchoring the breath guide ───────────────────────── */
@@ -87,42 +91,42 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
   }
   function onMouseUp(e) { if (e.button === 0) pressUp(); }
 
-  function onTouchStart(e) {
-    if (touchHoldId !== null) return;
-    const half = window.innerWidth * 0.5;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i];
-      if (t.clientX >= half) {
-        touchHoldId = t.identifier; touchHoldX = t.clientX; touchHoldY = t.clientY;
-        pressDown();
-        return;
-      }
+  // A held thumb wanders: a resting hand drifts, and the same finger is also the
+  // look control, so the frame is moving under it. 16px was inside the noise of
+  // an outstretched thumb on a phone — a hold could die from a tremor. This is
+  // still far short of the sweep a deliberate look drag makes.
+  const HOLD_SLOP = 34;      // px
+
+  function onHoldDown(e) {
+    if (e.pointerType === 'mouse') return;
+    if (e.clientX < window.innerWidth * 0.5) return;
+    // The newest thumb in the look half owns the hold. Nothing else can be
+    // holding it that we still care about, and refusing to re-arm on a stale id
+    // is exactly how the hold used to become permanently unavailable.
+    touchHoldId = e.pointerId; touchHoldX = e.clientX; touchHoldY = e.clientY;
+    pressDown();
+  }
+  function onHoldMove(e) {
+    if (e.pointerId !== touchHoldId) return;
+    if (Math.hypot(e.clientX - touchHoldX, e.clientY - touchHoldY) > HOLD_SLOP) {
+      touchHoldId = null; holdDown = false;   // it was a look drag, not a hold
     }
   }
-  function onTouchMove(e) {
-    if (touchHoldId === null) return;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i];
-      if (t.identifier === touchHoldId &&
-          Math.hypot(t.clientX - touchHoldX, t.clientY - touchHoldY) > 16) {
-        touchHoldId = null; holdDown = false;   // it was a look drag, not a hold
-      }
-    }
-  }
-  function onTouchEnd(e) {
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === touchHoldId) { touchHoldId = null; pressUp(); }
-    }
+  function onHoldEnd(e) {
+    if (e.pointerId !== touchHoldId) return;
+    touchHoldId = null;
+    pressUp();
   }
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('mousedown', onMouseDown);
   window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('touchstart', onTouchStart, { passive: true });
-  window.addEventListener('touchmove', onTouchMove, { passive: true });
-  window.addEventListener('touchend', onTouchEnd, { passive: true });
-  window.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  window.addEventListener('pointerdown', onHoldDown);
+  window.addEventListener('pointermove', onHoldMove);
+  window.addEventListener('pointerup', onHoldEnd);
+  window.addEventListener('pointercancel', onHoldEnd);
+  window.addEventListener('lostpointercapture', onHoldEnd);
   window.addEventListener('blur', cancelHold);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancelHold(); });
 
@@ -147,6 +151,34 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
 
   valley.copy(anchors.shrineView).add(new THREE.Vector3(0, -2, -60));
 
+  // Where the dawn is watched from. A little short of the overlook anchor: far
+  // enough past the shrine's stone base that no post, beam or roof edge is in
+  // front of the valley, close enough that the ground still carries the bottom
+  // of the frame instead of dropping straight into cloud.
+  const settleView = anchors.shrineView.clone();
+  settleView.z += 1.1;
+
+  // The bell hangs at eye height on the line a lot of people will walk out
+  // along: ring it from the near side and a straight glide to the overlook goes
+  // through the bronze. Bowing the curve away from the bell clears it from every
+  // position you can ring from, and reads as stepping around the bell rather
+  // than avoiding it. It does not clear the four uprights from every position —
+  // see the note in README on what is left.
+  const SETTLE_BOW = 1.2;       // m of control-point offset; the curve takes half
+  const via = new THREE.Vector3();
+
+  function settleVia() {
+    const sx = player.position.x, sz = player.position.z;
+    const dx = settleView.x - sx, dz = settleView.z - sz;
+    const len = Math.hypot(dx, dz);
+    const mx = (sx + settleView.x) * 0.5, mz = (sz + settleView.z) * 0.5;
+    if (len < 0.01) { via.set(mx, settleView.y, mz); return via; }
+    let nx = -dz / len, nz = dx / len;
+    if ((mx - anchors.bell.x) * nx + (mz - anchors.bell.z) * nz < 0) { nx = -nx; nz = -nz; }
+    via.set(mx + nx * SETTLE_BOW, settleView.y, mz + nz * SETTLE_BOW);
+    return via;
+  }
+
   function onEnterPhase(p) {
     pt = 0;
     holdDown = false; holdT = 0; consumed = false;
@@ -162,6 +194,12 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
       audio.bell(1.0);
       state.bellRung = true;
       ui.setPrompt(null);
+      // You can ring the bell from anywhere you can reach it, including from
+      // behind a post with the whole shrine between you and the valley. The
+      // dawn is the payoff for the entire walk, so it is composed from one
+      // authored overlook rather than from wherever the strike happened to
+      // land — a slow settle onto the ledge, not a cut.
+      player.beginCinematic(settleView, SETTLE_SECONDS, settleVia());
     }
     if (p === 'ending') {
       player.setEnabled(false);
@@ -180,7 +218,13 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
   const GAZE_BASE = 0.40;      // rad — ~23° of slack at any range
   const GAZE_SIZE = 1.15;      // m — the apparent radius we treat targets as having
 
-  function evaluateTarget(cfg) {
+  // Once a hold is genuinely under way the thresholds widen a little. Acquiring
+  // the target still takes deliberate aim; keeping it does not, so a thumb that
+  // drifts a few degrees mid-hold no longer throws the whole hold away.
+  const ENGAGED_REACH = 1.18;
+  const GAZE_MIN = 0.45, GAZE_MIN_ENGAGED = 0.30;
+
+  function evaluateTarget(cfg, engaged) {
     const p = cfg.point;
     const dx = p.x - camera.position.x, dz = p.z - camera.position.z;
     const dist = Math.hypot(dx, dz);
@@ -200,7 +244,8 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
 
     const prox = smoothstep(cfg.reach + 4.2, cfg.reach * 0.85, dist);
     focus = prox * gaze;
-    actionable = dist <= cfg.reach && gaze > 0.45;
+    const reach = engaged ? cfg.reach * ENGAGED_REACH : cfg.reach;
+    actionable = dist <= reach && gaze > (engaged ? GAZE_MIN_ENGAGED : GAZE_MIN);
     return focus;
   }
 
@@ -273,7 +318,7 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
 
       /* ── light the lantern ── */
       case 'lantern': {
-        const f = evaluateTarget(TARGETS.lantern);
+        const f = evaluateTarget(TARGETS.lantern, holdT > 0);
         const fired = tickHold(dt, () => {
           state.lanternLit = true;
           env.setLanternLit(true);
@@ -303,7 +348,7 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
         );
         if (!orbWoken && dOrb < 8) { orbWoken = true; env.setOrbActive(true); }
 
-        const f = evaluateTarget(TARGETS.toOrb);
+        const f = evaluateTarget(TARGETS.toOrb, holdT > 0);
         const fired = tickHold(dt, () => {
           if (!orbWoken) { orbWoken = true; env.setOrbActive(true); }
           ui.setPrompt(null);
@@ -371,7 +416,7 @@ export function createInteractions({ camera, env, player, ui, audio, state, adva
           ui.setSubtitle('Go on. The valley is waking.', 5);
         }
         // past the crest the reveal speaks for itself — no subtitles here.
-        const f = evaluateTarget(TARGETS.toShrine);
+        const f = evaluateTarget(TARGETS.toShrine, holdT > 0);
         const fired = tickHold(dt, () => {
           ui.setPrompt(null);
           ui.setSubtitle(null);

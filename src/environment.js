@@ -1140,6 +1140,17 @@ export function createEnvironment(scene, ctx) {
     orbCore = new THREE.Mesh(new THREE.SphereGeometry(0.155, 24, 16), orbCoreMat);
     orb.add(orbCore);
 
+    // NOTE — small saturated green dots have been seen in and around the orb on
+    // iPad, never on Android. Not reproduced and not diagnosed. The orb itself
+    // has no green in it: the shell mixes warm 0xffd9a8 with a blue rim, the
+    // core is warm, the halo is warm, and the world motes are warm/cool only.
+    // The only green in the scene is vegetation, which the orb does not occlude
+    // (additive, depthWrite off) and does brighten — so thin grass blades
+    // aliasing behind it is the leading theory, and it would fit a device that
+    // landed on a tier with no MSAA. That is a guess. Before changing anything
+    // here, load the page on the affected iPad with ?quality=high and
+    // ?quality=medium: if the dots go away with MSAA, it is aliasing and the fix
+    // belongs in the quality tier, not in this shader.
     orbShellMat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
@@ -1160,7 +1171,11 @@ export function createEnvironment(scene, ctx) {
         uniform float uTime; uniform float uGlow; uniform vec3 uColor; uniform vec3 uRim;
         varying vec3 vN; varying vec3 vV; varying vec3 vP;
         void main(){
-          float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 3.1);
+          // max() guards the base: rounding can push abs(dot()) a hair past 1.0,
+          // and pow() with a negative base is undefined in GLSL — some drivers
+          // return NaN there, which lands on screen as an arbitrary bright pixel.
+          // On hardware that already rounds the other way this is a no-op.
+          float f = pow(max(0.0, 1.0 - abs(dot(normalize(vN), normalize(vV)))), 3.1);
           // Three slow, unequal periods: the shell breathes rather than ticks,
           // and the veils never line up into stripes.
           float band = 0.34 * sin(vP.y * 9.0 + uTime * 0.29)
