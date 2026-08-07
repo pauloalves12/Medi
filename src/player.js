@@ -14,6 +14,7 @@ const EYE_HEIGHT = 1.62;      // m
 const GROUND_TAU = 0.085;     // slope smoothing
 const PITCH_LIMIT = 75 * Math.PI / 180;
 const MOUSE_SENS = 0.00215;   // rad / px
+const MOUSE_JUMP = 220;       // px in one event — past what any hand can do
 const TOUCH_SENS = 0.0042;    // rad / px
 const LOOK_TAU = 0.028;       // mouse damping (~28ms, under the 40ms budget)
 
@@ -45,6 +46,11 @@ export function createPlayer(camera, canvas, ctx) {
 
   let yaw = 0, pitch = 0, roll = 0;
   let enabled = false;
+  // Walking and looking are separable. Still Water sits you down on a stone and
+  // takes the walk away without taking the view away, and `enabled` cannot say
+  // that — it gates the touch handlers themselves, so switching it off on a
+  // phone would take the look with it. Ascent never touches this.
+  let walk = true;
 
   // velocity in world XZ, smoothed toward the desired velocity
   let velX = 0, velZ = 0;
@@ -62,6 +68,7 @@ export function createPlayer(camera, canvas, ctx) {
   let moveX = 0, moveZ = 0;      // -1..1 analog input (touch stick or keys)
 
   let locked = false;
+  let lockDeafUntil = 0;
 
   // assisted look
   const assistTarget = new THREE.Vector3();
@@ -117,12 +124,21 @@ export function createPlayer(camera, canvas, ctx) {
     locked = document.pointerLockElement === canvas;
     document.body.classList.toggle('locked', locked);
     if (!locked) { pendYaw = 0; pendPitch = 0; }
+    // Taking the lock warps the cursor to the middle of the screen, and the
+    // browser reports that warp as an ordinary movement — so the frame after
+    // `Begin` arrives with a delta the width of the screen in it, and the view
+    // snaps to wherever the button happened to be. Deaf for a moment, and
+    // deaf to anything no hand could have done, is enough to stop it.
+    else lockDeafUntil = performance.now() + 90;
   }
 
   function onMouseMove(e) {
     if (!locked) return;
-    pendYaw -= (e.movementX || 0) * MOUSE_SENS;
-    pendPitch -= (e.movementY || 0) * MOUSE_SENS;
+    if (performance.now() < lockDeafUntil) return;
+    const mx = e.movementX || 0, my = e.movementY || 0;
+    if (Math.abs(mx) > MOUSE_JUMP || Math.abs(my) > MOUSE_JUMP) return;
+    pendYaw -= mx * MOUSE_SENS;
+    pendPitch -= my * MOUSE_SENS;
   }
 
   if (!ctx.isTouch) {
@@ -201,7 +217,9 @@ export function createPlayer(camera, canvas, ctx) {
     // so a tap cannot also arrive at the desktop press handlers.
     e.preventDefault();
 
-    if (e.clientX < window.innerWidth * 0.5) {
+    // With walking gone the screen has only one job, so a thumb anywhere on it
+    // looks. Half a screen that does nothing would read as a broken control.
+    if (walk && e.clientX < window.innerWidth * 0.5) {
       // A fresh thumb in the movement half always takes the movement slot. Any
       // previous owner is either gone or has been abandoned, and there is no
       // reliable way to tell those apart — so we never let a stale id keep the
@@ -333,7 +351,7 @@ export function createPlayer(camera, canvas, ctx) {
     if (keys.KeyA || keys.ArrowLeft) ix -= 1;
     const mag = Math.hypot(ix, iz);
     if (mag > 1) { ix /= mag; iz /= mag; }
-    if (!enabled) { ix = 0; iz = 0; }
+    if (!enabled || !walk) { ix = 0; iz = 0; }
 
     const sinY = Math.sin(yaw), cosY = Math.cos(yaw);
     // forward = (-sin, 0, -cos)   right = (cos, 0, -sin)
@@ -412,10 +430,25 @@ export function createPlayer(camera, canvas, ctx) {
       // call that says who has control now — so it always ends here. Otherwise a
       // cinematic that ran once would hold the walker still for good.
       cineActive = false; cineLock = false;
-      if (!enabled) {
+      if (enabled) walk = true;
+      else {
         releaseAll();
         moveX = 0; moveZ = 0;
         releaseTouch();
+      }
+    },
+
+    /**
+     * Keep the view, lose the walk. Unlike setEnabled this leaves every input
+     * path live, so looking around still works on a phone — the left half of
+     * the screen simply stops being a stick and starts being more view.
+     */
+    setWalk(on) {
+      walk = !!on;
+      if (!walk) {
+        releaseAll();
+        moveX = 0; moveZ = 0;
+        releaseMove();
       }
     },
 

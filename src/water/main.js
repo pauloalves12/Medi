@@ -1,0 +1,312 @@
+/**
+ * Still Water — a meditation on stillness.
+ *
+ * The integration layer: renderer, quality tier, the shared `state`, the phase
+ * machine's clock and the frame loop. It owns no visuals and no UI.
+ *
+ * ── MODULE CONTRACT ──────────────────────────────────────────────────────────
+ * Modules are created once, in this order, and only ever talk to each other
+ * through the objects below and the shared `state`. There are no cross-imports
+ * between them; the two leaves (mood.js, textures.js) have no behaviour and no
+ * imports of ours, so importing them is not a channel.
+ *
+ *  scene.js     createScene(scene, ctx) -> {
+ *      update(dt, state)
+ *      getGroundHeight(x, z) -> number
+ *      constrainPosition(desired: Vector3)
+ *      anchors: { start, stand, lake, compose, ripple }
+ *    }
+ *
+ *  sky.js       createSky(scene, camera, renderer, ctx) -> {
+ *      update(dt, state) / render() / resize(w, h, dpr)
+ *      moonDir: Vector3
+ *    }
+ *
+ *  lake.js      createLake(scene, ctx, { groundHeight, noise, rippleCentre }) -> {
+ *      update(dt, state)
+ *      pulse(strength01)                      // one breathing ring
+ *    }
+ *
+ *  mist.js      createMist(scene, camera, ctx, { noise, dot, groundHeight }) -> {
+ *      update(dt, state)
+ *    }
+ *
+ *  stillness.js createStillness(opts) -> { update(dt, sample) -> 0..1, activity, … }
+ *
+ *  flow.js      createFlow(deps) -> { update(dt) }
+ *
+ *  player.js and ui.js are shared with Ascent and are used unmodified.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ── THE ONE IDEA ─────────────────────────────────────────────────────────────
+ * `state.settle` is the only channel between the person and the world. It is
+ * the stillness they have earned, floored by flow.js so the ending arrives for
+ * everybody, and every module reads it through its own curve in mood.js. The
+ * player is never told it exists, never shown a number, and never fails.
+ */
+
+import * as THREE from 'three';
+import { EXPERIENCES, EXPERIENCE_ORDER, experienceHref } from '../experiences.js';
+import { createPlayer } from '../player.js';
+import { createUI } from '../ui.js';
+import { noiseTexture, softDotTexture } from './textures.js';
+import { createScene } from './scene.js';
+import { createSky } from './sky.js';
+import { createLake } from './lake.js';
+import { createMist } from './mist.js';
+import { createStillness } from './stillness.js';
+import { createLakeAudio } from './audio.js';
+import { createFlow } from './flow.js';
+
+/* ── quality tier ─────────────────────────────────────────────────────────────
+ * The same detection Ascent uses, with a table of its own. A night lake spends
+ * its budget in different places: no god rays, no dense meadow, no shadow map
+ * except on the top tier — a moon casts almost nothing worth a depth pass — and
+ * the water gets the resolution instead.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+function detectQuality() {
+  const forced = new URLSearchParams(location.search).get('quality');
+  if (forced === 'low' || forced === 'medium' || forced === 'high') return forced;
+
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const cores = navigator.hardwareConcurrency || 4;
+  const mem = navigator.deviceMemory || 4;
+
+  if (mobile || cores <= 4 || mem <= 4) return mobile && (cores <= 4 || mem <= 4) ? 'low' : 'medium';
+  if (cores >= 8 && mem >= 8) return 'high';
+  return 'medium';
+}
+
+const QUALITY_PRESETS = {
+  high: {
+    dpr: 2.0, shadows: true, shadowSize: 1024, bloom: true,
+    terrainSeg: 200, waterSeg: 168, panoWidth: 1024, panoHeight: 96,
+    mistBands: 5, motes: 420, pines: 280, grass: 9000, rocks: 48, treeDetail: 1.0,
+  },
+  medium: {
+    dpr: 1.5, shadows: false, shadowSize: 512, bloom: true,
+    terrainSeg: 160, waterSeg: 120, panoWidth: 768, panoHeight: 72,
+    mistBands: 4, motes: 260, pines: 180, grass: 4200, rocks: 34, treeDetail: 0.7,
+  },
+  low: {
+    dpr: 1.0, shadows: false, shadowSize: 512, bloom: false,
+    terrainSeg: 112, waterSeg: 76, panoWidth: 512, panoHeight: 56,
+    mistBands: 2, motes: 120, pines: 100, grass: 1600, rocks: 24, treeDetail: 0.45,
+  },
+};
+
+/* ── shared state ─────────────────────────────────────────────────────────── */
+
+const PHASES = [
+  'title', 'approach', 'shore', 'settling', 'breathing',
+  'reflection', 'stillness', 'reveal', 'complete',
+];
+
+const state = {
+  phase: 'title',
+  elapsed: 0,
+  started: false,
+
+  // 0..1, earned. Never shown, never named, never scored.
+  stillness: 0,
+  // What the world actually answers to: the stillness, floored by flow.js so
+  // that the ending is reachable from any behaviour. Zero for the whole middle.
+  settle: 0,
+  settleFloor: 0,
+  activity: 0,
+
+  breathOpen: 0,      // 0..1 lungs, written by flow.js during 'breathing'
+  windGust: 0,        // 0..1 slow envelope, driven here, read by everyone
+};
+
+function setPhase(next) {
+  if (state.phase === next || PHASES.indexOf(next) < 0) return;
+  state.phase = next;
+  audio.setPhase(next);
+  if (next === 'complete') showComplete();
+}
+
+/* ── boot ─────────────────────────────────────────────────────────────────── */
+
+const canvas = document.getElementById('scene');
+const quality = detectQuality();
+const preset = QUALITY_PRESETS[quality];
+
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: quality !== 'low',
+    powerPreference: 'high-performance',
+    stencil: false,
+  });
+} catch (e) {
+  document.body.innerHTML = '<div class="noscript">This meditation needs WebGL.</div>';
+  throw e;
+}
+
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset.dpr));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = preset.shadows;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene3 = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 3000);
+
+const ctx = {
+  quality, preset, renderer, THREE,
+  isTouch: matchMedia('(pointer: coarse)').matches,
+  experience: 'stillwater',
+};
+
+const texNoise = noiseTexture(256, 8821);
+const texDot = softDotTexture();
+
+const env = createScene(scene3, ctx);
+const sky = createSky(scene3, camera, renderer, ctx);
+const lake = createLake(scene3, ctx, {
+  groundHeight: env.getGroundHeight,
+  noise: texNoise,
+  rippleCentre: env.anchors.ripple,
+});
+const mist = createMist(scene3, camera, ctx, {
+  noise: texNoise, dot: texDot, groundHeight: env.getGroundHeight,
+});
+const player = createPlayer(camera, canvas, ctx);
+const ui = createUI(document.getElementById('ui'), ctx);
+const audio = createLakeAudio();
+const stillness = createStillness();
+
+player.position.copy(env.anchors.start);
+player.setEnabled(false);
+
+const flow = createFlow({
+  env, player, ui, audio, lake, state,
+  advance: setPhase,
+  ctx,
+});
+
+/* ── title ────────────────────────────────────────────────────────────────── */
+
+function choosePath(next) {
+  if (next === 'stillwater' || !EXPERIENCES[next]) return;
+  ui.fade(1, 0.55, EXPERIENCES[next].fadeIn);
+  setTimeout(() => location.replace(experienceHref(next)), 620);
+}
+
+function begin() {
+  if (state.started) return;
+  state.started = true;
+  audio.unlock();
+  ui.hideTitle();
+  player.setEnabled(true);
+  player.requestLock();
+  setPhase('approach');
+  ui.fade(0, 3.0);
+}
+
+function restart() { location.reload(); }
+
+function leave() {
+  ui.fade(1, 0.55, EXPERIENCES.ascent.fadeIn);
+  setTimeout(() => location.replace(experienceHref('ascent')), 620);
+}
+
+function showComplete() {
+  ui.showComplete(restart, {
+    line: 'You may carry this stillness with you.',
+    duration: false,           // nothing here was counted
+    onLeave: leave,
+  });
+}
+
+ui.showTitle({
+  onBegin: begin,
+  path: 'stillwater',
+  paths: EXPERIENCE_ORDER.map((id) => ({ id, label: EXPERIENCES[id].label, tagline: EXPERIENCES[id].tagline })),
+  onPath: choosePath,
+  // One version so far, so this is the name of where you are going rather than
+  // a choice. ui.js renders a single-item row as a label.
+  mode: 'moonlit',
+  modes: [{ id: 'moonlit', label: 'Moonlit Lake', tagline: 'a lake, a moon, and as long as it takes' }],
+});
+
+/* ── frame loop ───────────────────────────────────────────────────────────── */
+
+const clock = new THREE.Clock();
+let hidden = false;
+document.addEventListener('visibilitychange', () => {
+  hidden = document.hidden;
+  if (!hidden) clock.getDelta();
+  audio.setWind(hidden ? 0 : 1);
+});
+
+function frame() {
+  requestAnimationFrame(frame);
+  if (hidden) return;
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  state.elapsed += dt;
+
+  // Before anything is walked there is nothing to be still about, and the
+  // meter must not fill while the title card is up.
+  if (state.started && state.phase !== 'complete') {
+    state.stillness = stillness.update(dt, {
+      yaw: player.yaw, pitch: player.pitch, speed01: player.speed01,
+    });
+    state.activity = stillness.activity;
+  }
+  state.settle = Math.max(state.stillness, state.settleFloor);
+
+  // A slow, non-repeating envelope shared by the pines, the mist and the audio.
+  // How much of it survives to be felt is the settle's business, not this one's.
+  const e = state.elapsed;
+  state.windGust = 0.5 + 0.28 * Math.sin(e * 0.17) + 0.14 * Math.sin(e * 0.53 + 1.7)
+    + 0.08 * Math.sin(e * 1.09 + 4.2);
+
+  player.update(dt, env, state);
+  flow.update(dt);
+  env.update(dt, state);
+  lake.update(dt, state);
+  mist.update(dt, state);
+  sky.update(dt, state);
+  ui.update(dt, state);
+  audio.update(dt, state);
+
+  sky.render();
+}
+
+/* ── resize ───────────────────────────────────────────────────────────────── */
+
+let resizeTimer = 0;
+function onResize() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const w = window.innerWidth, h = window.innerHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, preset.dpr);
+    camera.aspect = w / h;
+    // A taller frame needs a wider lens or the lake loses the sky above it.
+    camera.fov = h > w ? 70 : 58;
+    camera.updateProjectionMatrix();
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(w, h);
+    sky.resize(w, h, dpr);
+  }, 80);
+}
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', onResize);
+onResize();
+
+// the review harness's only hook into the piece
+window.__phase = () => state.phase;
+window.__still = () => ({ stillness: state.stillness, settle: state.settle, activity: state.activity });
+window.__cam = () => ({
+  x: +camera.position.x.toFixed(2), y: +camera.position.y.toFixed(2), z: +camera.position.z.toFixed(2),
+  yaw: +player.yaw.toFixed(3), pitch: +player.pitch.toFixed(3),
+});
+
+frame();

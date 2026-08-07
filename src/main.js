@@ -77,6 +77,7 @@
  */
 
 import * as THREE from 'three';
+import { EXPERIENCES, EXPERIENCE_ORDER, experienceHref } from './experiences.js';
 import { MODES, MODE_ORDER, DEFAULT_MODE, resolveMode } from './timeofday.js';
 import { createEnvironment } from './environment.js';
 import { createLighting } from './lighting.js';
@@ -294,8 +295,19 @@ function restart() {
   location.reload();
 }
 
+// Leaving for the other meditation is the same gesture as changing the hour,
+// for the same reason — see the note above detectMode.
+function choosePath(next) {
+  if (next === 'ascent' || !EXPERIENCES[next]) return;
+  ui.fade(1, 0.55, EXPERIENCES[next].fadeIn);
+  setTimeout(() => location.replace(experienceHref(next)), 620);
+}
+
 ui.showTitle({
   onBegin: begin,
+  path: 'ascent',
+  paths: EXPERIENCE_ORDER.map((id) => ({ id, label: EXPERIENCES[id].label, tagline: EXPERIENCES[id].tagline })),
+  onPath: choosePath,
   mode: modeName,
   modes: MODE_ORDER.map((id) => ({ id, label: MODES[id].label, tagline: MODES[id].tagline })),
   onMode: chooseMode,
@@ -351,5 +363,8 @@ function onResize() {
 window.addEventListener('resize', onResize);
 window.addEventListener('orientationchange', onResize);
 onResize();
+
+// the review harness's only hook into the piece
+window.__phase = () => state.phase;
 
 frame();

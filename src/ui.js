@@ -36,9 +36,10 @@ export function createUI(root, ctx) {
 
     <section class="title" data-el="title">
       <div class="title-inner">
-        <h1 class="title-word">ASCENT</h1>
-        <p class="title-sub">a short mountain meditation · about three minutes</p>
-        <div class="hours" data-el="hours" role="radiogroup" aria-label="time of day"></div>
+        <h1 class="title-word"><span>Mountain</span><span>Sanctuary</span></h1>
+        <div class="paths" data-el="paths" role="radiogroup" aria-label="meditation"></div>
+        <p class="paths-tagline" data-el="pathsTagline"></p>
+        <div class="hours" data-el="hours" role="radiogroup" aria-label="version"></div>
         <p class="hours-tagline" data-el="hoursTagline"></p>
         <button class="begin" type="button" data-el="begin"><span>Begin</span></button>
         <p class="title-controls">${controls}</p>
@@ -69,11 +70,17 @@ export function createUI(root, ctx) {
 
     <div class="subtitle" data-el="subtitle"><span data-el="subtitleText"></span></div>
 
+    <!-- Quieter than a subtitle and higher up the frame: the breath words in
+         Still Water, which have to be readable without ever being the thing
+         you are looking at. -->
+    <div class="whisper" data-el="whisper"><span data-el="whisperText"></span></div>
+
     <section class="complete" data-el="complete">
       <div class="complete-inner">
         <p class="complete-line" data-el="cLine">You may carry this with you.</p>
         <p class="complete-dur" data-el="cDur"></p>
         <button class="begin again" type="button" data-el="again"><span>Again</span></button>
+        <button class="leave" type="button" data-el="leave"><span>the other path</span></button>
       </div>
     </section>
   `;
@@ -107,48 +114,61 @@ export function createUI(root, ctx) {
   el.begin.addEventListener('click', () => { if (beginHandler) beginHandler(); });
 
   /**
-   * The hours. Two words with a hairline under the chosen one and a single
+   * A choice row. Words with a hairline under the chosen one and a single
    * italic line beneath saying what it is — the same grammar as `Begin`, not a
-   * pair of toggle buttons. Selecting one is a decision about the whole piece,
-   * so it reads like part of the title card rather than a setting.
+   * set of toggle buttons. Choosing is a decision about the whole piece, so it
+   * reads as part of the title card rather than as a setting.
+   *
+   * The card carries two of these: which meditation, and which version of it.
+   * A row offering only one thing still prints the word — it is the name of
+   * where you are about to be, not an option — but nothing about it is
+   * clickable and it takes no focus.
    */
-  function buildHours(modes, current, onMode) {
-    if (!modes || modes.length < 2) return;
-    el.hours.classList.add('is-on');
+  function buildRow(rowEl, taglineEl, cls, items, current, onPick) {
+    if (!items || !items.length) return () => {};
+    rowEl.classList.add('is-on');
     const tagline = {};
-    for (const m of modes) {
+    const show = (text) => {
+      const t = text || '';
+      if (t === taglineEl.dataset.line) return;
+      taglineEl.dataset.line = t;
+      taglineEl.textContent = t;
+    };
+    const only = items.length < 2;
+    for (const m of items) {
       tagline[m.id] = m.tagline;
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'hour';
-      b.dataset.mode = m.id;
-      b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', String(m.id === current));
+      b.className = cls;
+      b.dataset.pick = m.id;
       b.innerHTML = `<span>${m.label}</span>`;
       if (m.id === current) b.classList.add('is-current');
-      b.addEventListener('click', () => { if (m.id !== current && onMode) onMode(m.id); });
-      // Hovering previews the other tagline without committing to anything.
-      b.addEventListener('pointerenter', () => setTagline(tagline[m.id]));
-      b.addEventListener('focus', () => setTagline(tagline[m.id]));
-      b.addEventListener('pointerleave', () => setTagline(tagline[current]));
-      b.addEventListener('blur', () => setTagline(tagline[current]));
-      el.hours.appendChild(b);
+      if (only) {
+        b.disabled = true;
+        b.tabIndex = -1;
+        b.setAttribute('aria-disabled', 'true');
+      } else {
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-checked', String(m.id === current));
+        b.addEventListener('click', () => { if (m.id !== current && onPick) onPick(m.id); });
+        // Hovering previews the other line without committing to anything.
+        b.addEventListener('pointerenter', () => show(tagline[m.id]));
+        b.addEventListener('focus', () => show(tagline[m.id]));
+        b.addEventListener('pointerleave', () => show(tagline[current]));
+        b.addEventListener('blur', () => show(tagline[current]));
+      }
+      rowEl.appendChild(b);
     }
-    setTagline(tagline[current]);
-  }
-
-  let lastTagline = '';
-  function setTagline(text) {
-    const t = text || '';
-    if (t === lastTagline) return;
-    lastTagline = t;
-    el.hoursTagline.textContent = t;
+    show(tagline[current]);
+    return show;
   }
 
   function showTitle(opts) {
     const o = typeof opts === 'function' ? { onBegin: opts } : (opts || {});
     beginHandler = o.onBegin;
-    buildHours(o.modes, o.mode, o.onMode);
+    buildRow(el.paths, el.pathsTagline, 'path', o.paths, o.path, o.onPath);
+    buildRow(el.hours, el.hoursTagline, 'hour', o.modes, o.mode, o.onMode);
+    if (o.path) el.title.classList.add(`is-${o.path}`);
     if (o.mode) el.title.classList.add(`is-${o.mode}`);
     el.title.classList.add('is-on');
     setTimeout(() => { try { el.begin.focus({ preventScroll: true }); } catch (e) { /* noop */ } },
@@ -310,26 +330,51 @@ export function createUI(root, ctx) {
     }
   }
 
+  /* ── whisper ────────────────────────────────────────────────────────────── */
+
+  let lastWhisper = '';
+  function setWhisper(text) {
+    const t = text || '';
+    if (t === lastWhisper) return;
+    lastWhisper = t;
+    if (t) { el.whisperText.textContent = t; el.whisper.classList.add('is-on'); }
+    else el.whisper.classList.remove('is-on');
+  }
+
   /* ── completion ─────────────────────────────────────────────────────────── */
 
   let againHandler = null;
+  let leaveHandler = null;
   let completeT = -1;
   let completeStage = 0;
   let elapsed = 0;
+  let showDuration = true;
 
   el.again.addEventListener('click', () => { if (againHandler) againHandler(); });
+  el.leave.addEventListener('click', () => { if (leaveHandler) leaveHandler(); });
 
-  function showComplete(onAgain) {
+  /**
+   * `opts` is optional and Ascent passes none, so the signature it has always
+   * had still means what it did. Still Water counts nothing, so it asks for the
+   * duration to be left off and offers the way back to the other meditation.
+   */
+  function showComplete(onAgain, opts) {
+    const o = opts || {};
     againHandler = onAgain;
+    leaveHandler = o.onLeave || null;
+    showDuration = o.duration !== false;
     if (document.exitPointerLock) { try { document.exitPointerLock(); } catch (e) { /* noop */ } }
     document.body.classList.remove('locked');
     el.complete.classList.add('is-on');
-    el.cDur.textContent = fmtDuration(elapsed);
+    if (o.line) el.cLine.textContent = o.line;
+    el.cDur.textContent = showDuration ? fmtDuration(elapsed) : '';
+    if (leaveHandler) el.leave.classList.add('is-shown');
     completeT = 0;
     completeStage = 0;
     setPrompt(null);
     setBreath(null, 0, 5, 5);
     setSubtitle(null);
+    setWhisper(null);
   }
 
   function tickComplete(dt) {
@@ -337,10 +382,13 @@ export function createUI(root, ctx) {
     completeT += dt;
     const marks = reduce ? [0.2, 0.6, 1.0] : [2.0, 4.4, 6.4];
     if (completeStage === 0 && completeT > marks[0]) { completeStage = 1; el.cLine.classList.add('is-on'); }
-    else if (completeStage === 1 && completeT > marks[1]) { completeStage = 2; el.cDur.classList.add('is-on'); }
-    else if (completeStage === 2 && completeT > marks[2]) {
+    else if (completeStage === 1 && completeT > marks[1]) {
+      completeStage = 2;
+      if (showDuration) el.cDur.classList.add('is-on');
+    } else if (completeStage === 2 && completeT > marks[2]) {
       completeStage = 3;
       el.again.classList.add('is-on');
+      el.leave.classList.add('is-on');
       setTimeout(() => { try { el.again.focus({ preventScroll: true }); } catch (e) { /* noop */ } }, 400);
     }
   }
@@ -354,5 +402,8 @@ export function createUI(root, ctx) {
     updateBreathAnchor(dt);
   }
 
-  return { showTitle, hideTitle, setPrompt, setBreath, setSubtitle, showComplete, fade, update };
+  return {
+    showTitle, hideTitle, setPrompt, setBreath, setSubtitle, setWhisper,
+    showComplete, fade, update,
+  };
 }

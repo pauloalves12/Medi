@@ -1,18 +1,20 @@
-# Ascent
+# Mountain Sanctuary
 
-A short first-person interactive meditation in a mountain sanctuary.
-One path, one lantern, one breathing orb, one bell. About four minutes.
+Two short first-person interactive meditations in the same mountain, chosen on
+one title card.
 
-The same sanctuary can be walked at two hours of the day, chosen on the title card:
+| | |
+|---|---|
+| **Ascent** | a meditation on movement and release — one path, one lantern, one breathing orb, one bell. About four minutes. |
+| **Still Water** | a meditation on stillness — a forest path down to an alpine lake at night, and as long as it takes. About five minutes. |
+
+Ascent can be walked at two hours of the day; Still Water has one version so far.
 
 | | |
 |---|---|
 | **Dawn** | night into sunrise — arrival, waking, beginning |
 | **Dusk** | day into sunset — release, completion, letting go |
-
-Dawn is the default. The two share every stone, every interaction and the whole
-shape of the meditation; what separates them is the light. See **Time of day**
-below.
+| **Moonlit Lake** | the only hour Still Water has |
 
 ## Run it locally
 
@@ -26,7 +28,7 @@ python3 -m http.server 8080
 
 Any static server works (`npx serve`, `php -S localhost:8080`, VS Code Live Server).
 
-Three.js r169 is vendored in `vendor/three/`, so the experience runs fully offline.
+Three.js r169 is vendored in `vendor/three/`, so both experiences run fully offline.
 
 ### Controls
 
@@ -34,80 +36,109 @@ Three.js r169 is vendored in `vendor/three/`, so the experience runs fully offli
 |---|---|
 | Move | `W A S D` or arrow keys |
 | Look | mouse (click to capture the cursor) |
-| Act | hold `Space` or the left mouse button |
+| Act | hold `Space` or the left mouse button — Ascent only |
 | Touch | left half of the screen to walk, right half to look, hold to act |
 
-Headphones are recommended — all sound is synthesised in the browser, there are no audio files.
+Once Still Water seats you on the shore stone there is nothing left to walk to,
+so the whole screen becomes the view.
 
-### Quality tiers
+Headphones are recommended — all sound is synthesised in the browser, there are
+no audio files.
 
-The renderer picks `high` / `medium` / `low` from device memory, core count and
-pointer type. Override it with a query string when testing:
+### Deep links
 
 ```
-http://localhost:8080/?quality=low
-http://localhost:8080/?mode=dusk           # skip the title card's choice
+http://localhost:8080/                          Ascent, at dawn
+http://localhost:8080/?mode=dusk                Ascent, at dusk
+http://localhost:8080/?experience=stillwater    Still Water
+http://localhost:8080/?quality=low              works with any of the above
 ```
 
-`low` drops shadows, bloom, the god-ray meshes and most mist layers, and cuts
-grass and particle counts — it is the fallback for phones and integrated GPUs.
+`?quality=` is a testing override for the tier the renderer picks from device
+memory, core count and pointer type. `low` is the fallback for phones and
+integrated GPUs: in Ascent it drops shadows, bloom, the god-ray meshes and most
+mist layers; in Still Water it drops bloom, the nearest mountain ring, three of
+the five mist bands, and coarsens the water grid. Neither of them loses anything
+you can interact with, and the whole of Still Water's stillness logic is
+identical at every tier.
 
-### Known limitations
+### Review harness and tests
 
-**The walk out to the dawn can graze a shrine upright.** Ringing the bell hands
-control to an authored settle onto the overlook south of the shrine, so the
-sunrise is composed the same way every time. The curve is bowed clear of the
-bell, which you can ring from either side of, but the shrine is a ring of four
-posts and you can strike from anywhere around it — so from roughly one ringing
-position in six the glide passes through a post for two or three frames. The
-posts have no collision during normal walking either, so this is the existing
-behaviour rather than a new one; solving it properly needs real path planning,
-which is more machinery than the moment justifies.
+```bash
+node tests/stillness.test.mjs      # the stillness curve, 26 assertions, no browser
+node tools/shots.mjs stillwater    # the Still Water review set
+node tools/shots.mjs devices       # the final composition on three screens
+node tools/shots.mjs ascent dusk   # an Ascent regression pass
+```
 
-**Green speckles around the orb on some iPads** are not diagnosed. See the note
-in `src/environment.js` above the orb shell shader.
-
-**Dusk's final frame has no lit foreground object.** The sunset is watched from
-the same authored overlook the sunrise is, and both the lantern and the shrine
-are behind the camera there. What carries the bottom of that frame is backlit
-ground and grass, not warm detail. Moving the camera to include the shrine is
-exactly the change the overlook exists to prevent.
-
-**Neither mode shows the sun's disc in the payoff frame.** Every ridge line
-subtends 4-15 degrees from the overlook, so no elevation that still reads as
-sunrise or sunset also clears them. Dusk aims the sun into the saddle left of
-centre and opens the halo, so it reads as the sun immediately behind that notch.
+`tools/shots.mjs` needs a static server on `:8080` and Playwright's Chromium. It
+replaces `performance.now` with a clock it advances itself, so a five-minute
+meditation is arithmetic rather than five minutes, and so the same shot is the
+same shot every run. Screenshots land in `review-screenshots/`.
 
 ## Architecture
 
-Ten source files, plain ES modules, no bundler, no framework.
+Plain ES modules, no bundler, no framework, no dependencies beyond a vendored
+three.js.
 
 ```
-index.html        canvas, import map, the single #ui mount point
-styles.css        all interface styling
-src/main.js       integration layer: renderer, quality tier, mode selection,
-                  shared state, phase machine, frame loop. Owns no visuals
-                  and no UI.
-src/timeofday.js  the two experiences as data: keyframe tables, palettes and
-                  the response curves every module reads. No behaviour.
-src/environment.js terrain, path, vegetation, rocks, lantern, orb, shrine, bell
-src/lighting.js   sky, sun/moon keyframes, shadows, lantern light, post-processing
-src/atmosphere.js fog, ground mist, valley clouds, particles, god rays
-src/player.js     first-person walker, head bob, assisted look
-src/interactions.js proximity + gaze + hold-to-confirm, the three interactions
-src/ui.js         title screen, prompts, breath guide, subtitles, completion
-src/audio.js      Web Audio synthesis: wind, drone, pad, breath cues, the bell
+index.html            canvas, import map, the single #ui mount point
+styles.css            all interface styling, shared
+src/boot.js           the entry point: reads ?experience= and imports it
+src/experiences.js    the catalogue — ids, labels, taglines. Pure data.
+
+src/player.js         SHARED  first-person walker, touch control system
+src/ui.js             SHARED  title card, prompts, subtitles, completion
+
+src/main.js           ASCENT  integration layer
+src/timeofday.js      ASCENT  dawn and dusk as data
+src/environment.js    ASCENT  terrain, path, vegetation, lantern, orb, shrine, bell
+src/lighting.js       ASCENT  sky, sun keyframes, shadows, post-processing
+src/atmosphere.js     ASCENT  fog, ground mist, the valley cloud sea, god rays
+src/interactions.js   ASCENT  proximity + gaze + hold-to-confirm
+src/audio.js          ASCENT  Web Audio synthesis
+
+src/water/main.js     STILL WATER  integration layer
+src/water/mood.js     STILL WATER  palette, mountain profile, response curves,
+                                   and the night sky as one GLSL function
+src/water/textures.js STILL WATER  the two generated images
+src/water/scene.js    STILL WATER  ground, shore, stone, pines, mountains
+src/water/lake.js     STILL WATER  the water surface and its reflection
+src/water/sky.js      STILL WATER  sky dome, moonlight, post-processing
+src/water/mist.js     STILL WATER  fog, the low bands, motes
+src/water/stillness.js STILL WATER the behavioural stillness value (no imports)
+src/water/flow.js     STILL WATER  the phase machine
+src/water/audio.js    STILL WATER  Web Audio synthesis
 ```
 
-`main.js` declares a locked module contract at the top of the file. Modules never
-import each other — they communicate only through that contract and through a
-single shared `state` object (`phase`, `dawn`, `mist`, `lanternLit`, `pathGlow`,
-`windGust`, …) that `main.js` passes into every `update(dt, state)`.
+### How the two are separated
 
-`timeofday.js` is the one exception, and only because it is not a module in that
-sense: it is a leaf table of colours and one-line curves with no behaviour and no
-imports of its own. `main.js` reads it once and hands the selected mode to every
-module on `ctx.tod`.
+`boot.js` reads `?experience=` and imports one integration layer or the other.
+That is the entire coupling. Neither experience imports anything of the other's,
+neither knows the other exists beyond the catalogue entry the title card needs,
+and there is no `if (stillWater)` anywhere. Changing an experience cannot change
+the other one because there is no code path they share except `player.js`,
+`ui.js` and the stylesheet.
+
+Choosing on the title card is a page load rather than a teardown, for the same
+reason changing the hour is: half of what separates two worlds is decided while
+its materials are being built, and nobody switches twice. The reload happens
+behind a fade and lands back on the title with the other world already behind it.
+
+Each experience declares a module contract at the top of its own `main.js`.
+Modules never import each other — they communicate through that contract and a
+single shared `state` object passed into every `update(dt, state)`. The two
+leaves each experience allows itself (`timeofday.js`, `mood.js` / `textures.js`)
+are tables and generators with no behaviour, which is why importing them is not
+a channel between modules.
+
+Everything is procedural in both. There are no textures, models or audio files
+in the repository — terrain, stones, pines, grass, the shrine, the bell and the
+lake are generated geometry, materials are generated in code or in GLSL, and
+every sound is built from oscillators, noise buffers and a synthesised impulse
+response for the reverb.
+
+## Ascent
 
 The phase machine is linear and cannot dead-end:
 
@@ -115,10 +146,10 @@ The phase machine is linear and cannot dead-end:
 title → lantern → toOrb → breathing → toShrine → bell → ending → complete
 ```
 
-`interactions.js` advances the early phases; `main.js` drives the 34-second
+`interactions.js` advances the early phases; `main.js` drives the 44-second
 ending on a timer and shows the completion screen.
 
-## Time of day
+### Time of day
 
 `state.dawn` is a single 0..1 scalar: progress along the active mode's light arc.
 At **dawn** it runs pre-dawn indigo → sun in the valley; at **dusk**, clear
@@ -149,8 +180,133 @@ enough that nothing about it is noticeable until the shrine, where the sun is
 already low. The final bell hands over to the same authored settle onto the
 overlook in both modes; what differs is what is waiting there.
 
-Everything is procedural. There are no textures, models or audio files in the
-repository — terrain, flagstones, pines, grass, rocks, the shrine and the bell
-are generated geometry, materials are generated in code or in GLSL, and every
-sound is built from oscillators, noise buffers and a synthesised impulse
-response for the reverb.
+## Still Water
+
+```
+title → approach → shore → settling → breathing → reflection → stillness → reveal → complete
+```
+
+A path down through pines to a stone at the edge of a lake, five breaths, and
+then a long quiet with almost nothing in it.
+
+### The mechanic
+
+The calmer the player is, the calmer the lake becomes. There is no meter, no
+score, no achievement and no text that says so; the environment is the entire
+feedback channel, and the player is meant to work it out by noticing.
+
+`stillness.js` turns behaviour into one number. It watches the camera's angular
+velocity and the walking speed — nothing else, and no sensor of any kind — and
+is built specifically not to feel like a combo meter:
+
+- a **deadband** under 0.16 rad/s, so a thumb resting on a screen costs nothing;
+- **smoothing** on the raw rate, so one fat pointer-event batch cannot spike it;
+- **asymmetry** — disturbance arrives in a quarter of a second and leaves over
+  nearly two, so the water keeps moving for a moment after you stop;
+- **hysteresis** — rising and falling are a latched state with two thresholds, so
+  hovering near the edge does not chatter.
+
+Calm from nothing to full takes about 28 seconds. Ten seconds of continuously
+looking around spends all of it. One deliberate one-second glance costs about a
+tenth, tail included. Nothing ever resets, nothing can fail, and no breath is
+ever lost. `tests/stillness.test.mjs` asserts all of that without a browser.
+
+`state.settle` is what the world actually reads: the stillness, floored by
+`flow.js`. The floor is zero for the entire middle of the piece and only climbs
+during the final reveal, so the clear water is earned nearly every time it is
+seen, and merely arrived at by the player who was never still. Every phase also
+leaves on *stillness or time, whichever comes first*, so a restless night is
+waited out rather than punished.
+
+### The lake
+
+One mesh, one material, no render target, no second camera, no extra pass.
+
+A planar reflection costs a whole second render of the world, and buys almost
+nothing here: what is above this lake is a sky, a moon, a field of stars and four
+rings of distant silhouette, none of which have parallax worth resolving from a
+camera that moves two metres.
+
+So the water asks instead. `mood.js` exports the night sky as a GLSL *function*.
+The dome calls it looking outward. For each water fragment, the lake reflects the
+view vector about the perturbed surface normal and calls the same function down
+the reflected ray, plus one lookup into a 1024×96 panorama of the skyline baked
+from the same profile function the mountain geometry is built from. That returns
+the moon, its haloes, the horizon band, the stars and the mountains, correctly
+placed, for the price of a lit pixel — and it is why what stands on the horizon
+and what lies in the water are the same mountains.
+
+Sampling the reflection *through the normal* is also what makes the mechanic work
+for free. A disturbed lake scatters the reflected rays over a wide cone, so the
+moon's mirror image smears into a shivering path and the stars are lost in it. A
+still one hands back a clean disc with the field of stars around it. Nothing
+fades anything; the same arithmetic gets a steadier question.
+
+The geometry stays nearly flat throughout — the whole displacement is under six
+centimetres, and the broad swell's *steepness* is carried as a separate number
+from its amplitude, because a lake's undulation is far flatter than it needs to
+look. What the eye reads as the lake calming is almost entirely the normal.
+
+### The breath
+
+There is no orb. A soft ring opens out of the reflected moon on each inhale and
+fades on the exhale — an actual crest in the surface, with a faint rim of light
+on it, centred on the point where the moon's mirror image lands for an eye 2.08 m
+above the water. Two very quiet words carry the rhythm for anyone not watching.
+
+Looking around during the breathing costs stillness exactly as it does everywhere
+else, and the water answering with a rougher surface is the entire consequence.
+Cycles are never restarted and there is no failure state.
+
+### The ending
+
+Ascent's lesson, applied: the payoff cannot depend on where the player happened
+to be looking, and it also cannot be taken from them with a cut. The reveal opens
+with a 2.1-second drift onto an authored composition — ninety metres out on the
+moon's own azimuth, a degree and a half above the eye — with the assisted look
+easing in to 0.62 and then most of the way back out, so the frame is *made* for
+the player without being *taken* from them. The horizon lands just above the
+middle, the moon sits in the upper third, its path runs from the horizon down
+toward the camera, and a sliver of the stone they are standing on carries the
+bottom edge.
+
+## Known limitations
+
+**Ascent: the walk out to the dawn can graze a shrine upright.** Ringing the bell
+hands control to an authored settle onto the overlook south of the shrine, so the
+sunrise is composed the same way every time. The curve is bowed clear of the
+bell, which you can ring from either side of, but the shrine is a ring of four
+posts and you can strike from anywhere around it — so from roughly one ringing
+position in six the glide passes through a post for two or three frames. The
+posts have no collision during normal walking either, so this is the existing
+behaviour rather than a new one; solving it properly needs real path planning,
+which is more machinery than the moment justifies.
+
+**Ascent: green speckles around the orb on some iPads** are not diagnosed. See
+the note in `src/environment.js` above the orb shell shader.
+
+**Ascent: dusk's final frame has no lit foreground object.** The sunset is
+watched from the same authored overlook the sunrise is, and both the lantern and
+the shrine are behind the camera there.
+
+**Ascent: neither mode shows the sun's disc in the payoff frame.** Every ridge
+line subtends 4-15 degrees from the overlook. Still Water does not have this
+problem — its moon sits at 17°, clear of a skyline that tops out near 12°.
+
+**Still Water: the water shader is the frame's whole cost.** Everything the lake
+does happens per lit pixel, and the lake is most of the screen from the moment
+you reach the shore. Distant ripple detail is faded out with distance, which
+prevents aliasing and happens to be free, but there is no cheaper path than the
+one taken and no fallback below the `low` tier.
+
+**Still Water: the reflected skyline is a panorama, not geometry.** It is baked
+from the same profile and at the same eye height, so it agrees with the
+mountains to well under a degree, but it is parallax-free — moving the camera
+does not move the reflected ridges against each other. At two metres of travel
+and four hundred metres of distance there is nothing to see, and nothing in the
+piece invites you to test it.
+
+**Neither experience has been run on real hardware.** Everything here was
+verified in Chromium against a software rasteriser at phone, tablet and desktop
+sizes. That checks composition, behaviour, control flow and correctness; it does
+not check frame rate on an actual phone.
