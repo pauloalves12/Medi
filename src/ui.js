@@ -102,9 +102,12 @@ export function createUI(root, ctx) {
     el.fade.style.opacity = String(a);
   }
 
-  // open on black, then let the mountain arrive
-  el.fade.style.background = '#05070e';
-  fadeColor = '#05070e';
+  // Open on the world's own darkness, then let the mountain arrive. An hour
+  // that lands on a bright sky says so here (ctx.fadeIn) — fading a clear
+  // morning up out of near-black is a flash rather than a fade.
+  const openColor = (ctx && ctx.fadeIn) || '#05070e';
+  el.fade.style.background = openColor;
+  fadeColor = openColor;
   el.fade.style.opacity = '1';
   requestAnimationFrame(() => requestAnimationFrame(() => fade(0, reduce ? 0.4 : 2.6)));
 

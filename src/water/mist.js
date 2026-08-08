@@ -17,7 +17,6 @@
  */
 
 import * as THREE from 'three';
-import { PALETTE, curves } from './mood.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -41,6 +40,8 @@ const BANDS = [
 
 export function createMist(scene, camera, ctx, deps) {
   const preset = ctx.preset;
+  const PALETTE = ctx.mood.palette;
+  const curves = ctx.mood.curves;
   const root = new THREE.Group();
   root.name = 'mist';
   scene.add(root);
@@ -76,7 +77,7 @@ export function createMist(scene, camera, ctx, deps) {
         uniforms: {
           uNoise: { value: deps.noise },
           uTime: { value: 0 },
-          uColor: { value: new THREE.Color(0x2a3a56) },
+          uColor: { value: new THREE.Color(PALETTE.mist) },
           uDensity: { value: 0.2 },
           uScale: { value: B.s },
           uDrift: { value: new THREE.Vector2(B.dx, B.dz) },

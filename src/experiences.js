@@ -40,9 +40,9 @@ export function resolveExperience(q) {
  * Where `id` lives, starting from wherever we are now.
  *
  * `?quality=` survives because it is a testing switch that should outlive the
- * choice; `?mode=` does not, because it names an hour of the day that only
- * Ascent has. Ascent is the default and so carries no parameter at all, which
- * keeps the bare URL meaning exactly what it always meant.
+ * choice; `?mode=` does not, because both meditations have hours and neither
+ * one's names mean anything in the other. Ascent is the default and so carries
+ * no parameter at all, which keeps the bare URL meaning what it always meant.
  */
 export function experienceHref(id) {
   const url = new URL(location.href);

@@ -6,15 +6,16 @@ one title card.
 | | |
 |---|---|
 | **Ascent** | a meditation on movement and release — one path, one lantern, one breathing orb, one bell. About four minutes. |
-| **Still Water** | a meditation on stillness — a forest path down to an alpine lake at night, and as long as it takes. About five minutes. |
+| **Still Water** | a meditation on stillness — a forest path down to an alpine lake, and as long as it takes. About five minutes. |
 
-Ascent can be walked at two hours of the day; Still Water has one version so far.
+Each can be walked at two hours, chosen on the same card.
 
 | | |
 |---|---|
-| **Dawn** | night into sunrise — arrival, waking, beginning |
-| **Dusk** | day into sunset — release, completion, letting go |
-| **Moonlit Lake** | the only hour Still Water has |
+| **Ascent — Dawn** | night into sunrise — arrival, waking, beginning |
+| **Ascent — Dusk** | day into sunset — release, completion, letting go |
+| **Still Water — Moonlit** | a moon on dark water, and the quiet inside that |
+| **Still Water — Day** | a clear mountain morning, and a lake becoming a mirror |
 
 ## Run it locally
 
@@ -48,11 +49,16 @@ no audio files.
 ### Deep links
 
 ```
-http://localhost:8080/                          Ascent, at dawn
-http://localhost:8080/?mode=dusk                Ascent, at dusk
-http://localhost:8080/?experience=stillwater    Still Water
-http://localhost:8080/?quality=low              works with any of the above
+http://localhost:8080/                                    Ascent, at dawn
+http://localhost:8080/?mode=dusk                          Ascent, at dusk
+http://localhost:8080/?experience=stillwater              Still Water, moonlit
+http://localhost:8080/?experience=stillwater&mode=day     Still Water, morning
+http://localhost:8080/?quality=low                        works with any of the above
 ```
+
+`?mode=` names an hour, and each meditation has its own two: `dawn` / `dusk`
+for Ascent, `moonlit` / `day` for Still Water. Choosing the other meditation
+drops it, because neither one's hours mean anything in the other.
 
 `?quality=` is a testing override for the tier the renderer picks from device
 memory, core count and pointer type. `low` is the fallback for phones and
@@ -65,10 +71,12 @@ identical at every tier.
 ### Review harness and tests
 
 ```bash
-node tests/stillness.test.mjs      # the stillness curve, 26 assertions, no browser
-node tools/shots.mjs stillwater    # the Still Water review set
-node tools/shots.mjs devices       # the final composition on three screens
-node tools/shots.mjs ascent dusk   # an Ascent regression pass
+node tests/stillness.test.mjs        # the stillness curve, 26 assertions, no browser
+node tests/mood.test.mjs             # both hours' tables and contracts, no browser
+node tools/shots.mjs stillwater      # Still Water, the moonlit hour
+node tools/shots.mjs stillwater day  # Still Water, the morning
+node tools/shots.mjs devices         # the final composition on three screens
+node tools/shots.mjs ascent dusk     # an Ascent regression pass
 ```
 
 `tools/shots.mjs` needs a static server on `:8080` and Playwright's Chromium. It
@@ -99,12 +107,13 @@ src/interactions.js   ASCENT  proximity + gaze + hold-to-confirm
 src/audio.js          ASCENT  Web Audio synthesis
 
 src/water/main.js     STILL WATER  integration layer
-src/water/mood.js     STILL WATER  palette, mountain profile, response curves,
-                                   and the night sky as one GLSL function
+src/water/mood.js     STILL WATER  the two hours as data: palettes, the mountain
+                                   profile, response curves, and each hour's own
+                                   sky as one GLSL function
 src/water/textures.js STILL WATER  the two generated images
 src/water/scene.js    STILL WATER  ground, shore, stone, pines, mountains
 src/water/lake.js     STILL WATER  the water surface and its reflection
-src/water/sky.js      STILL WATER  sky dome, moonlight, post-processing
+src/water/sky.js      STILL WATER  sky dome, the four lights, post-processing
 src/water/mist.js     STILL WATER  fog, the low bands, motes
 src/water/stillness.js STILL WATER the behavioural stillness value (no imports)
 src/water/flow.js     STILL WATER  the phase machine
@@ -189,6 +198,43 @@ title → approach → shore → settling → breathing → reflection → still
 A path down through pines to a stone at the edge of a lake, five breaths, and
 then a long quiet with almost nothing in it.
 
+### The two hours
+
+Structurally this is Ascent's `timeofday.js` again, and deliberately so: one
+file of data, resolved once, handed to every module, and read through per-hour
+response curves rather than branched on.
+
+`water/main.js` reads `?mode=`, resolves a mood out of `mood.js`, and puts it on
+`ctx.mood`. Every module takes its palette, its ridge colours, its curves and
+its sky shader off that. There is no `if (day)` in the experience, and no module
+is told which hour it is drawing.
+
+A mood owns the whole look and none of the place. The path, the stone, the
+shoreline, the headlands, the four rings of mountain and every anchor —
+including the authored composition the ending drifts onto — are built once from
+the same numbers at both hours. `ridgeHeight()` is one function outside both
+tables, so what stands on the horizon is the same mountain range whichever hour
+you walk it in; only its colours belong to an hour.
+
+Two channels drive the world, and keeping them apart is the whole design:
+
+| | |
+|---|---|
+| **stillness** | the air and the water clearing — haze, ripple, reflection, the mist drawing apart. Reversible, because fidgeting has to cost something. |
+| **time** | the morning progressing — the sun's elevation, the sky's own colour. Monotone, because a sun that sank when you looked around would read as a bug. |
+
+Moonlit has no second channel: its arc returns zero, because a moon does not
+move in the five minutes anybody is watching it. Day runs early morning into
+clear late morning over about seven minutes, and nothing about it is meant to be
+noticeable while it happens — it is the difference between the frame at the
+arrival and the frame at the end, not an event.
+
+The celestial values for the current frame are computed once, in `main.js`, and
+written to `state.light`. The dome and the water both read them from there. That
+is not tidiness: it is the reflection technique's only correctness requirement.
+If the sky and the lake disagreed by one frame about where the sun was, the
+lake would be reflecting a sky that is not above it.
+
 ### The mechanic
 
 The calmer the player is, the calmer the lake becomes. There is no meter, no
@@ -227,25 +273,74 @@ nothing here: what is above this lake is a sky, a moon, a field of stars and fou
 rings of distant silhouette, none of which have parallax worth resolving from a
 camera that moves two metres.
 
-So the water asks instead. `mood.js` exports the night sky as a GLSL *function*.
-The dome calls it looking outward. For each water fragment, the lake reflects the
-view vector about the perturbed surface normal and calls the same function down
-the reflected ray, plus one lookup into a 1024×96 panorama of the skyline baked
-from the same profile function the mountain geometry is built from. That returns
-the moon, its haloes, the horizon band, the stars and the mountains, correctly
-placed, for the price of a lit pixel — and it is why what stands on the horizon
-and what lies in the water are the same mountains.
+So the water asks instead. Each hour exports its sky as a GLSL *function*, and
+both hours export the same two entry points with the same signature. The dome
+calls it looking outward. For each water fragment, the lake reflects the view
+vector about the perturbed surface normal and calls the same function down the
+reflected ray, plus one lookup into a 1024×96 panorama of the skyline baked from
+the same profile function the mountain geometry is built from. That returns the
+sky, the light's disc and haloes, the horizon band, the fine detail and the
+mountains, correctly placed, for the price of a lit pixel — and it is why what
+stands on the horizon and what lies in the water are the same mountains.
 
 Sampling the reflection *through the normal* is also what makes the mechanic work
 for free. A disturbed lake scatters the reflected rays over a wide cone, so the
-moon's mirror image smears into a shivering path and the stars are lost in it. A
-still one hands back a clean disc with the field of stars around it. Nothing
-fades anything; the same arithmetic gets a steadier question.
+mirror image smears and the fine detail is lost in it. A still one hands the
+detail back. Nothing fades anything; the same arithmetic gets a steadier
+question.
+
+The two arguments the hours read differently — `detailGain` and `detailSoft` —
+are where that lands. At night they are the field of stars: a broken lake keeps
+only the brightest, and the faint field returns as the water goes quiet. By day
+they are the definition of the clouds, which do exactly the same thing for
+exactly the same reason.
+
+Where the reflected ray goes is what decides what the lake shows, and it is the
+same geometry at both hours: from a seated eye 2.08 m up, the reflected ray
+climbs as the water gets nearer — about 1° at ninety metres out, about 12° at
+ten, past the skyline entirely inside about five. So the far water hands back
+the mountains and the near water hands back open sky. At night that means the
+moon's path and the stars; by day it means the clouds land in the middle of the
+frame, where the eye already is.
 
 The geometry stays nearly flat throughout — the whole displacement is under six
 centimetres, and the broad swell's *steepness* is carried as a separate number
 from its amplitude, because a lake's undulation is far flatter than it needs to
 look. What the eye reads as the lake calming is almost entirely the normal.
+
+### The morning
+
+Not the night with the lights turned up. Three things needed more than a
+re-tint, and all three are the same lesson in different places:
+
+- **Albedo.** The night palette was mixed to be seen by a moon — the rock is
+  `0x38404e` and the pines are `0x1c262e`, because at that light level anything
+  darker arrives as black. Under a sun those same values are wet slate and the
+  meadow is a grey rug, so the day carries its own. Ascent has this note in both
+  directions; lifting the light instead of the albedo only gives grey a suntan.
+- **The fill.** A daylight sky is an enormous soft box, and it is the only
+  reason a shadow on a shore rock reads blue rather than black. Run anywhere
+  near the key's own strength, though, it flattens every rock and ridge into one
+  value — which is exactly what "brighter" looks like when it has been mistaken
+  for "daylight". It is held to well under half the key.
+- **The sun is not where the moon is.** The moon sits at azimuth -7°, straight
+  down the lake and straight down the composition, which is right for a moon:
+  the path it lays points at the person watching. A sun in the same place puts a
+  blown glare column down the middle of the frame, directly on top of the
+  reflected mountain — the one thing this hour exists to show. So it goes high
+  and hard to the side, at 76-92°, which is Dusk's cross-light lesson applied
+  here. Off the axis, the water reflects sky rather than sun, and the mirror
+  survives. The composition anchors do not move; only what is lighting them did.
+
+The risks were the other way round from the night's, too. A calm lake under a
+bright sky is one step from a sheet of white paper, so the shimmer floor that
+keeps the water liquid is set *higher* by day than by night, the bloom runs at a
+third of the night's strength with the threshold well up, and the highlight tint
+is left almost neutral — warming highlights is what makes a landscape look
+graded, and this one should look seen. The subsurface term that stops the
+foreground reading as paint has to come back the colour the water made it: run
+through the sun's white, as the night's runs through the moon's, it lifts every
+channel equally and the whole lake turns to milk.
 
 ### The breath
 

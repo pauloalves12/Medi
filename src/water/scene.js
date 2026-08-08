@@ -15,7 +15,7 @@
 
 import * as THREE from 'three';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
-import { PALETTE, RIDGES, ridgeHeight, curves } from './mood.js';
+import { ridgeHeight } from './mood.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -136,6 +136,9 @@ export function groundHeight(x, z) {
 
 export function createScene(scene, ctx) {
   const preset = ctx.preset;
+  const PALETTE = ctx.mood.palette;
+  const RIDGES = ctx.mood.ridges;
+  const curves = ctx.mood.curves;
   const root = new THREE.Group();
   root.name = 'shore';
   scene.add(root);
@@ -253,7 +256,7 @@ export function createScene(scene, ctx) {
 
     const cRock = new THREE.Color(PALETTE.rock);
     const cSoil = new THREE.Color(PALETTE.soil);
-    const cWet = new THREE.Color(0x080b11);
+    const cWet = new THREE.Color(PALETTE.wet);
     const c = new THREE.Color();
 
     let p = 0;
@@ -553,10 +556,13 @@ export function createScene(scene, ctx) {
   buildGrass();
 
   /* ── mountains ──────────────────────────────────────────────────────────────
-   * Four rings of silhouette, each one lower in contrast than the one in front
-   * of it and each fading *up* into the horizon haze rather than down into
-   * black — a moonlit sky is brightest where it meets the water, so distance
-   * costs contrast and gains value.
+   * Four rings, each one lower in contrast than the one in front of it and
+   * each fading *up* into the horizon haze rather than down into black. Both
+   * hours want that direction and for the same reason: the sky is brightest
+   * where it meets the water, so distance costs contrast and gains value.
+   * What the hour changes is only how much value there is to gain — at night
+   * these are silhouettes, and by day they are snow behind fifteen hundred
+   * metres of air.
    *
    * These are generated from the same profile the reflection panorama is baked
    * from (mood.ridgeHeight), which is why what stands on the horizon and what

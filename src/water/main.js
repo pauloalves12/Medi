@@ -17,9 +17,8 @@
  *      anchors: { start, stand, lake, compose, ripple }
  *    }
  *
- *  sky.js       createSky(scene, camera, renderer, ctx) -> {
+ *  sky.js       createSky(scene, camera, renderer, ctx, { noise }) -> {
  *      update(dt, state) / render() / resize(w, h, dpr)
- *      moonDir: Vector3
  *    }
  *
  *  lake.js      createLake(scene, ctx, { groundHeight, noise, rippleCentre }) -> {
@@ -43,12 +42,22 @@
  * the stillness they have earned, floored by flow.js so the ending arrives for
  * everybody, and every module reads it through its own curve in mood.js. The
  * player is never told it exists, never shown a number, and never fails.
+ *
+ * ── THE HOUR ─────────────────────────────────────────────────────────────────
+ * The same lake is walked at two hours: MOONLIT and DAY. Which one is resolved
+ * once, here, from `?mode=`, and handed to every module on `ctx.mood`; the
+ * celestial values it produces for the current frame are written once onto
+ * `state.light` below, so the sky dome and the water's reflection are answering
+ * the same arithmetic on the same frame — which is the whole reflection
+ * technique. No module knows which hour it is in and there is no `if (day)`
+ * anywhere. See mood.js.
  */
 
 import * as THREE from 'three';
 import { EXPERIENCES, EXPERIENCE_ORDER, experienceHref } from '../experiences.js';
 import { createPlayer } from '../player.js';
 import { createUI } from '../ui.js';
+import { MOODS, MOOD_ORDER, DEFAULT_MOOD, resolveMood } from './mood.js';
 import { noiseTexture, softDotTexture } from './textures.js';
 import { createScene } from './scene.js';
 import { createSky } from './sky.js';
@@ -123,6 +132,11 @@ const state = {
   // off the mirror point and lose it for the whole piece.
   breathTilt: 0,
   windGust: 0,        // 0..1 slow envelope, driven here, read by everyone
+
+  // The hour's celestial values for this frame, from `mood.light(state)`.
+  // Written once per frame before anything reads it, so the dome, the lights
+  // and the water's reflection cannot disagree about where the sun is.
+  light: null,
 };
 
 function setPhase(next) {
@@ -137,6 +151,22 @@ function setPhase(next) {
 const canvas = document.getElementById('scene');
 const quality = detectQuality();
 const preset = QUALITY_PRESETS[quality];
+
+/**
+ * The hour is fixed for the lifetime of the page, and choosing another one is a
+ * reload rather than a teardown — the same decision Ascent makes about its
+ * modes and boot.js makes about the two meditations, for the same reason: half
+ * of what separates the moonlit lake from the morning one is decided while its
+ * materials are being compiled, and nobody switches twice.
+ */
+function detectMood() {
+  const q = new URLSearchParams(location.search).get('mode');
+  return MOODS[q] ? q : DEFAULT_MOOD;
+}
+
+const moodName = detectMood();
+const mood = resolveMood(moodName);
+document.documentElement.dataset.mode = moodName;
 
 let renderer;
 try {
@@ -166,13 +196,21 @@ const ctx = {
   quality, preset, renderer, THREE,
   isTouch: matchMedia('(pointer: coarse)').matches,
   experience: 'stillwater',
+  mood, mode: moodName,
+  // ui.js opens on this rather than on black. Fading a bright morning up out
+  // of the night's near-black is a flash, not a fade.
+  fadeIn: mood.fadeIn,
 };
+
+// Before anything is built, so a module that wants the sun while it is still
+// choosing its materials does not have to guard against not having one yet.
+state.light = mood.light(state);
 
 const texNoise = noiseTexture(256, 8821);
 const texDot = softDotTexture();
 
 const env = createScene(scene3, ctx);
-const sky = createSky(scene3, camera, renderer, ctx);
+const sky = createSky(scene3, camera, renderer, ctx, { noise: texNoise });
 const lake = createLake(scene3, ctx, {
   groundHeight: env.getGroundHeight,
   noise: texNoise,
@@ -183,7 +221,7 @@ const mist = createMist(scene3, camera, ctx, {
 });
 const player = createPlayer(camera, canvas, ctx);
 const ui = createUI(document.getElementById('ui'), ctx);
-const audio = createLakeAudio();
+const audio = createLakeAudio(ctx);
 const stillness = createStillness();
 
 player.position.copy(env.anchors.start);
@@ -201,6 +239,18 @@ function choosePath(next) {
   if (next === 'stillwater' || !EXPERIENCES[next]) return;
   ui.fade(1, 0.55, EXPERIENCES[next].fadeIn);
   setTimeout(() => location.replace(experienceHref(next)), 620);
+}
+
+/** The other hour of the same lake. Fades out toward where it is going. */
+function chooseMood(next) {
+  if (next === moodName || !MOODS[next]) return;
+  ui.fade(1, 0.55, MOODS[next].fadeIn);
+  setTimeout(() => {
+    const url = new URL(location.href);
+    if (next === DEFAULT_MOOD) url.searchParams.delete('mode');
+    else url.searchParams.set('mode', next);
+    location.replace(url.toString());
+  }, 620);
 }
 
 function begin() {
@@ -234,10 +284,9 @@ ui.showTitle({
   path: 'stillwater',
   paths: EXPERIENCE_ORDER.map((id) => ({ id, label: EXPERIENCES[id].label, tagline: EXPERIENCES[id].tagline })),
   onPath: choosePath,
-  // One version so far, so this is the name of where you are going rather than
-  // a choice. ui.js renders a single-item row as a label.
-  mode: 'moonlit',
-  modes: [{ id: 'moonlit', label: 'Moonlit Lake', tagline: 'a lake, a moon, and as long as it takes' }],
+  mode: moodName,
+  modes: MOOD_ORDER.map((id) => ({ id, label: MOODS[id].label, tagline: MOODS[id].tagline })),
+  onMode: chooseMood,
 });
 
 /* ── frame loop ───────────────────────────────────────────────────────────── */
@@ -272,6 +321,10 @@ function frame() {
   const e = state.elapsed;
   state.windGust = 0.5 + 0.28 * Math.sin(e * 0.17) + 0.14 * Math.sin(e * 0.53 + 1.7)
     + 0.08 * Math.sin(e * 1.09 + 4.2);
+
+  // Once, before anything reads it: the dome and the lake must be answering
+  // the same sun on the same frame or the reflection is of a different sky.
+  state.light = mood.light(state);
 
   player.update(dt, env, state);
   flow.update(dt);
@@ -308,6 +361,7 @@ onResize();
 
 // the review harness's only hook into the piece
 window.__phase = () => state.phase;
+window.__mode = () => moodName;
 window.__still = () => ({ stillness: state.stillness, settle: state.settle, activity: state.activity });
 window.__cam = () => ({
   x: +camera.position.x.toFixed(2), y: +camera.position.y.toFixed(2), z: +camera.position.z.toFixed(2),

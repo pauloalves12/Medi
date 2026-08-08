@@ -6,9 +6,11 @@
  * of the piece; it exists so that "how does it look at the shrine" and "does the
  * lake read on a phone" are questions with reproducible answers.
  *
- *   node tools/shots.mjs stillwater            # the full Still Water set
+ *   node tools/shots.mjs stillwater            # Still Water, the moonlit hour
+ *   node tools/shots.mjs stillwater day        # Still Water, the morning
  *   node tools/shots.mjs ascent dawn           # Ascent regression pass
  *   node tools/shots.mjs devices               # final frame on three screens
+ *   node tools/shots.mjs tiers [mood]          # one moment on all three tiers
  *
  * Requires a static server on :8080 and Playwright's bundled Chromium.
  */
@@ -209,9 +211,17 @@ async function until(page, test, seconds, step = 3.0) {
 
 /* ── scripts ──────────────────────────────────────────────────────────────── */
 
-async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
-  const { page, context, errors } = await open(browser, url('experience=stillwater'), device);
-  console.log(`\n${prefix} @ ${device.tag}`);
+/**
+ * Still Water, end to end, at one of its hours.
+ *
+ * `mood` is 'moonlit' or 'day'; the script is identical for both, which is the
+ * point — the two hours share the phase machine, the walk and the mechanic, so
+ * a script that needs to know which one it is in would be evidence of a leak.
+ */
+async function stillwater(browser, device = DESKTOP, prefix = 'stillwater', mood = 'moonlit') {
+  const q = 'experience=stillwater' + (mood === 'moonlit' ? '' : `&mode=${mood}`);
+  const { page, context, errors } = await open(browser, url(q), device);
+  console.log(`\n${prefix} (${mood}) @ ${device.tag}`);
 
   await run(page, 3.2);
   await shot(page, `${prefix}/1-title`);
@@ -306,11 +316,12 @@ async function devices(browser, only) {
 }
 
 /** The same moment on all three tiers, so "low still looks like the place". */
-async function tiers(browser) {
+async function tiers(browser, mood = 'moonlit') {
   const out = [];
+  const m = mood === 'moonlit' ? '' : `&mode=${mood}`;
   for (const q of ['low', 'medium', 'high']) {
-    const { page, context, errors } = await open(browser, `${BASE}/?experience=stillwater&quality=${q}`, DESKTOP);
-    console.log(`\ntier ${q}`);
+    const { page, context, errors } = await open(browser, `${BASE}/?experience=stillwater${m}&quality=${q}`, DESKTOP);
+    console.log(`\ntier ${q} (${mood})`);
     await begin(page);
     await cheap(page, DESKTOP, true);
     for (let i = 0; i < 14 && (await phase(page)) === 'approach'; i++) await walk(page, 3.0);
@@ -319,7 +330,7 @@ async function tiers(browser) {
     await run(page, 30);
     await cheap(page, DESKTOP, false);
     await run(page, 1.0);
-    await shot(page, `stillwater-tiers/${q}`);
+    await shot(page, `stillwater-tiers/${mood === 'moonlit' ? '' : `${mood}-`}${q}`);
     console.log(errors.length ? `  ! ${errors.length} console errors` : '  · no console errors');
     errors.slice(0, 4).forEach((e) => console.log('    ', e));
     out.push(...errors);
@@ -397,10 +408,13 @@ let errors = [];
 try {
   if (what === 'ascent') errors = await ascent(browser, arg || 'dawn');
   else if (what === 'devices') errors = await devices(browser, arg);
-  else if (what === 'tiers') errors = await tiers(browser);
-  else if (what === 'phone') errors = await stillwater(browser, PHONE, 'stillwater-phone');
-  else if (what === 'tablet') errors = await stillwater(browser, TABLET, 'stillwater-tablet');
-  else errors = await stillwater(browser, DESKTOP, arg || 'stillwater');
+  else if (what === 'tiers') errors = await tiers(browser, arg || 'moonlit');
+  else if (what === 'phone') errors = await stillwater(browser, PHONE, 'stillwater-phone', arg || 'moonlit');
+  else if (what === 'tablet') errors = await stillwater(browser, TABLET, 'stillwater-tablet', arg || 'moonlit');
+  else if (what === 'stillwater') {
+    const mood = arg || 'moonlit';
+    errors = await stillwater(browser, DESKTOP, mood === 'day' ? 'stillwater-day' : 'stillwater', mood);
+  } else errors = await stillwater(browser, DESKTOP, arg || 'stillwater');
 } finally {
   await browser.close();
 }

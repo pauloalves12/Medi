@@ -33,7 +33,7 @@
  */
 
 import * as THREE from 'three';
-import { PALETTE, GLSL_NIGHT, moonDirection, panoramaPixels, curves } from './mood.js';
+import { panoramaPixels } from './mood.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -66,6 +66,9 @@ const GLSL_WAVES = /* glsl */`
 
 export function createLake(scene, ctx, deps) {
   const preset = ctx.preset;
+  const mood = ctx.mood;
+  const PALETTE = mood.palette;
+  const curves = mood.curves;
   const groundHeight = deps.groundHeight;
   const centre = deps.rippleCentre;
   let time = 0;
@@ -73,7 +76,7 @@ export function createLake(scene, ctx, deps) {
   /* ── the skyline, baked ─────────────────────────────────────────────────── */
 
   const pw = preset.panoWidth, ph = preset.panoHeight;
-  const pano = new THREE.DataTexture(panoramaPixels(pw, ph), pw, ph, THREE.RGBAFormat);
+  const pano = new THREE.DataTexture(panoramaPixels(pw, ph, mood), pw, ph, THREE.RGBAFormat);
   pano.colorSpace = THREE.SRGBColorSpace;
   pano.wrapS = THREE.RepeatWrapping;          // azimuth wraps
   pano.wrapT = THREE.ClampToEdgeWrapping;     // elevation does not
@@ -140,7 +143,7 @@ export function createLake(scene, ctx, deps) {
 
   /* ── material ───────────────────────────────────────────────────────────── */
 
-  const md = moonDirection();
+  const L0 = mood.light(null);
 
   const uniforms = {
     uNoise: { value: deps.noise },
@@ -158,17 +161,20 @@ export function createLake(scene, ctx, deps) {
     uBreath: { value: 0 },
     uLod: { value: 0.012 },
 
-    uZenith: { value: new THREE.Color(PALETTE.zenith) },
-    uHorizon: { value: new THREE.Color(PALETTE.horizon) },
-    uGlow: { value: new THREE.Color(PALETTE.glow) },
-    uMoonDir: { value: new THREE.Vector3(md[0], md[1], md[2]).normalize() },
-    uMoonCol: { value: new THREE.Color(PALETTE.moon) },
-    uGlowI: { value: 1.0 },
-    uMoonSize: { value: 0.00026 },
-    uDiscI: { value: 2.1 },
-    uHalo: { value: 60 },
-    uStarGain: { value: 0.1 },
-    uStarSoft: { value: 1.0 },
+    uZenith: { value: new THREE.Color(L0.zenith) },
+    uHorizon: { value: new THREE.Color(L0.horizon) },
+    uGlow: { value: new THREE.Color(L0.glow) },
+    uLightDir: { value: new THREE.Vector3(L0.dir[0], L0.dir[1], L0.dir[2]).normalize() },
+    uLightCol: { value: new THREE.Color(L0.discCol) },
+    uGlowI: { value: L0.waterGlowI },
+    uDiscSize: { value: curves.water.discSize(0) },
+    uDiscI: { value: L0.waterDiscI },
+    uHalo: { value: curves.water.halo(0) },
+    uDetailGain: { value: curves.water.detailGain(0) },
+    uDetailSoft: { value: curves.water.detailSoft(0) },
+    uAlbedo: { value: curves.water.albedo },
+    uScatter: { value: curves.water.scatter },
+    uScatterCol: { value: new THREE.Color(curves.water.scatterCol) },
 
     uDeep: { value: new THREE.Color(PALETTE.deep) },
     uShallow: { value: new THREE.Color(PALETTE.shallow) },
@@ -218,12 +224,14 @@ export function createLake(scene, ctx, deps) {
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
       }
     `,
-    fragmentShader: GLSL_NIGHT + GLSL_WAVES + /* glsl */`
+    fragmentShader: mood.glsl + GLSL_WAVES + /* glsl */`
       uniform sampler2D uNoise, uPano;
       uniform float uTime, uSwell, uRipple, uMicro, uShine, uSpecI, uBreath, uLod;
       uniform float uPathShine, uPathI;
-      uniform vec3 uZenith, uHorizon, uGlow, uMoonDir, uMoonCol;
-      uniform float uGlowI, uMoonSize, uDiscI, uHalo, uStarGain, uStarSoft;
+      uniform vec3 uZenith, uHorizon, uGlow, uLightDir, uLightCol;
+      uniform float uGlowI, uDiscSize, uDiscI, uHalo, uDetailGain, uDetailSoft;
+      uniform float uAlbedo, uScatter;
+      uniform vec3 uScatterCol;
       uniform vec3 uDeep, uShallow, uHaze;
       uniform float uFogK, uRingLight;
       uniform vec2 uRingC;
@@ -306,12 +314,12 @@ export function createLake(scene, ctx, deps) {
         // different sharpnesses across the same lake, which is what stops it
         // reading as one uniformly blurred image.
         float sharp = clamp(ruffle - 0.5, 0.0, 1.0);
-        vec3 refl = swWorld(R, uPano, uZenith, uHorizon, uGlow, uMoonDir, uMoonCol,
-                            uGlowI, uMoonSize * (1.0 + sharp * 0.9), uDiscI,
+        vec3 refl = swWorld(R, uPano, uNoise, uZenith, uHorizon, uGlow, uLightDir, uLightCol,
+                            uGlowI, uDiscSize * (1.0 + sharp * 0.9), uDiscI,
                             uHalo * mix(1.0, 0.5, sharp),
-                            uStarGain * mix(1.0, 0.72, sharp),
-                            clamp(uStarSoft + sharp * 0.30, 0.0, 1.0), uTime);
-        refl *= 0.88;                            // water is not a mirror
+                            uDetailGain * mix(1.0, 0.72, sharp),
+                            clamp(uDetailSoft + sharp * 0.30, 0.0, 1.0), uTime);
+        refl *= uAlbedo;                         // water is not a mirror
 
         // A slightly harder grazing response than Schlick's fifth power: the
         // far half of a lake really does go almost fully reflective, and the
@@ -337,8 +345,10 @@ export function createLake(scene, ctx, deps) {
         body *= mix(vec3(1.16, 1.12, 1.08), vec3(0.70, 0.81, 1.00),
                     smoothstep(0.3, 8.0, vDepth));
         // Light that went in and came back out. Without it the water at the
-        // player's own feet — where almost nothing reflects — is simply black.
-        body += uMoonCol * 0.007 * (0.35 + 0.65 * max(0.0, -V.y));
+        // player's own feet — where almost nothing reflects — is simply black
+        // at night, and a painted surface by day: this is the term that makes
+        // the near foreground read as something light goes *into*.
+        body += uScatterCol * uScatter * (0.35 + 0.65 * max(0.0, -V.y));
 
         vec3 col = mix(body, refl, fres);
 
@@ -348,29 +358,29 @@ export function createLake(scene, ctx, deps) {
         // to face the moon — it is the glitter riding on the column. Either
         // alone reads wrong: the first as a painted smear, the second as a
         // handful of fireflies.
-        vec3 H = normalize(uMoonDir - V);
+        vec3 H = normalize(uLightDir - V);
         vec3 Nb = normalize(vec3(-broad.x, 1.0, -broad.y));
         // The shimmer breaks the column up from the inside — free, because the
         // field is already fetched. Without it the path is an airbrushed smear
         // with no grain in it, which is the other half of why calm water was
         // reading as a solid.
         float grain = 0.66 + 1.30 * length(r3);
-        col += uMoonCol * pow(max(dot(Nb, H), 0.0), uPathShine) * uPathI
+        col += uLightCol * pow(max(dot(Nb, H), 0.0), uPathShine) * uPathI
              * mix(1.0, grain, 0.55);
-        col += uMoonCol * pow(max(dot(N, H), 0.0), uShine) * uSpecI;
+        col += uLightCol * pow(max(dot(N, H), 0.0), uShine) * uSpecI;
         // A wide, weak sheen over the whole moon-facing half of the lake,
         // textured by the same shimmer. This is the term that actually carries
         // the surface: it gives the water something of its own to show, instead
         // of leaving it to reflect a dark mountain and look like slate.
-        col += uMoonCol * pow(max(dot(N, H), 0.0), 9.0) * 0.020
+        col += uLightCol * pow(max(dot(N, H), 0.0), 9.0) * 0.020
              * (0.45 + 1.05 * length(r3)) * lod;
 
-        col += uMoonCol * ringGlow * uRingLight;
+        col += uLightCol * ringGlow * uRingLight;
 
         // The waterline itself: a wet gleam a hand's width wide, broken up so
         // it is a shore rather than a drawn curve.
         float edge = (1.0 - smoothstep(0.0, 0.30, vDepth)) * smoothstep(-0.12, 0.02, vDepth);
-        col += uMoonCol * edge * 0.055 * (0.55 + 0.90 * length(r2));
+        col += uLightCol * edge * 0.055 * (0.55 + 0.90 * length(r2));
 
         col = mix(col, uHaze, 1.0 - exp(-dist * uFogK));
         gl_FragColor = vec4(col, 1.0);
@@ -433,13 +443,23 @@ export function createLake(scene, ctx, deps) {
     uniforms.uPathShine.value = w.pathShine(s);
     uniforms.uPathI.value = w.pathI(s);
     uniforms.uHalo.value = w.halo(s);
-    uniforms.uStarGain.value = w.starGain(s);
-    uniforms.uStarSoft.value = w.starSoft(s);
+    uniforms.uDetailGain.value = w.detailGain(s);
+    uniforms.uDetailSoft.value = w.detailSoft(s);
     uniforms.uFogK.value = w.fog(s);
     // a broken surface cannot hold an edge, so the reflected disc softens with
     // everything else rather than staying a hard dot inside a smear
-    uniforms.uMoonSize.value = 0.00026 * (1 + 2.2 * (1 - s));
+    uniforms.uDiscSize.value = w.discSize(s);
     uniforms.uBreath.value = state ? clamp(state.breathTilt, -0.5, 0.5) : 0;
+
+    // The hour's own sky, for this frame, from the same table the dome read.
+    const L = (state && state.light) || mood.light(state);
+    uniforms.uZenith.value.setHex(L.zenith);
+    uniforms.uHorizon.value.setHex(L.horizon);
+    uniforms.uGlow.value.setHex(L.glow);
+    uniforms.uLightCol.value.setHex(L.discCol);
+    uniforms.uLightDir.value.set(L.dir[0], L.dir[1], L.dir[2]).normalize();
+    uniforms.uGlowI.value = L.waterGlowI;
+    uniforms.uDiscI.value = L.waterDiscI;
   }
 
   return { update, pulse, material };

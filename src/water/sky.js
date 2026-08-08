@@ -1,13 +1,16 @@
 /**
- * sky.js — the night above the lake, the light it casts, and the post chain.
+ * sky.js — the sky above the lake, the light it casts, and the post chain.
  * @see water/main.js MODULE CONTRACT
  *
  * `render()` is the only place the frame is drawn.
  *
- * The dome is one shader-material sphere painted by mood.js's `swSky`. Its
- * arguments are fixed here: the sky does not care how still anyone is being.
- * The lake calls the same function with different arguments, which is the whole
- * of the reflection technique — see the note at the top of mood.js.
+ * The dome is one shader-material sphere painted by the hour's own `swSky`,
+ * whichever hour that is. Its arguments come off `state.light`, which main.js
+ * writes once a frame; the lake calls the same function with *different*
+ * arguments from the same source, which is the whole of the reflection
+ * technique — see the note at the top of mood.js.
+ *
+ * Nothing in here knows which hour it is drawing.
  */
 
 import * as THREE from 'three';
@@ -16,7 +19,6 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { PALETTE, GLSL_NIGHT, moonDirection, curves } from './mood.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -39,6 +41,7 @@ const GradeShader = {
     uShadowTint: { value: new THREE.Color(0.020, 0.028, 0.052) },
     uHighTint: { value: new THREE.Color(0.985, 1.0, 1.045) },
     uHighMix: { value: 0.34 },
+    uSaturate: { value: 0.0 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -47,7 +50,7 @@ const GradeShader = {
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
     uniform vec2 uResolution;
-    uniform float uTime, uVignette, uAberration, uGrain, uHighMix;
+    uniform float uTime, uVignette, uAberration, uGrain, uHighMix, uSaturate;
     uniform vec3 uShadowTint, uHighTint;
     varying vec2 vUv;
 
@@ -73,6 +76,13 @@ const GradeShader = {
       col = mix(col, col * uHighTint, smoothstep(0.24, 0.86, l) * uHighMix);
       col = mix(col, smoothstep(0.0, 1.0, col), 0.10);
 
+      // ACES takes saturation out of everything, and it takes most of it out
+      // of a blue sky and a green lake — which at night costs nothing, because
+      // there is no colour in the frame to lose, and by day costs the whole
+      // difference between clear air and overcast. Zero for the moonlit hour;
+      // this is a restoration rather than a look.
+      col = mix(vec3(l), col, 1.0 + uSaturate);
+
       col *= 1.0 - uVignette * pow(clamp(r2 * 2.05, 0.0, 1.0), 1.45);
 
       float g = hash(vUv * uResolution + vec2(uTime * 61.7, uTime * 37.3)) - 0.5;
@@ -90,27 +100,31 @@ const GradeShader = {
 
 /* ── module ───────────────────────────────────────────────────────────────── */
 
-export function createSky(scene, camera, renderer, ctx) {
+export function createSky(scene, camera, renderer, ctx, deps) {
   const preset = ctx.preset;
+  const mood = ctx.mood;
+  const curves = mood.curves;
   let time = 0;
 
-  const md = moonDirection();
-  const moonDir = new THREE.Vector3(md[0], md[1], md[2]).normalize();
+  const L0 = mood.light(null);
+  const lightDir = new THREE.Vector3(L0.dir[0], L0.dir[1], L0.dir[2]).normalize();
 
   /* ── dome ───────────────────────────────────────────────────────────────── */
 
   const uniforms = {
-    uZenith: { value: new THREE.Color(PALETTE.zenith) },
-    uHorizon: { value: new THREE.Color(PALETTE.horizon) },
-    uGlow: { value: new THREE.Color(PALETTE.glow) },
-    uGround: { value: new THREE.Color(PALETTE.ground) },
-    uMoonDir: { value: moonDir.clone() },
-    uMoonCol: { value: new THREE.Color(PALETTE.moon) },
-    uGlowI: { value: 1.0 },
-    uMoonSize: { value: 0.000105 },
-    uDiscI: { value: 2.4 },
-    uHalo: { value: 380.0 },
-    uStarGain: { value: 1.0 },
+    uNoise: { value: deps.noise },
+    uZenith: { value: new THREE.Color(L0.zenith) },
+    uHorizon: { value: new THREE.Color(L0.horizon) },
+    uGlow: { value: new THREE.Color(L0.glow) },
+    uGround: { value: new THREE.Color(L0.ground) },
+    uLightDir: { value: lightDir.clone() },
+    uLightCol: { value: new THREE.Color(L0.discCol) },
+    uGlowI: { value: L0.glowI },
+    uDiscSize: { value: L0.discSize },
+    uDiscI: { value: L0.discI },
+    uHalo: { value: L0.halo },
+    uDetailGain: { value: L0.detailGain },
+    uDetailSoft: { value: L0.detailSoft },
     uTime: { value: 0 },
   };
 
@@ -128,15 +142,17 @@ export function createSky(scene, camera, renderer, ctx) {
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
-    fragmentShader: GLSL_NIGHT + /* glsl */`
-      uniform vec3 uZenith, uHorizon, uGlow, uGround, uMoonDir, uMoonCol;
-      uniform float uGlowI, uMoonSize, uDiscI, uHalo, uStarGain, uTime;
+    fragmentShader: mood.glsl + /* glsl */`
+      uniform sampler2D uNoise;
+      uniform vec3 uZenith, uHorizon, uGlow, uGround, uLightDir, uLightCol;
+      uniform float uGlowI, uDiscSize, uDiscI, uHalo, uDetailGain, uDetailSoft, uTime;
       varying vec3 vDir;
       void main(){
         vec3 d = normalize(vDir);
-        vec3 col = swSky(d, uZenith, uHorizon, uGlow, uMoonDir, uMoonCol,
-                         uGlowI, uMoonSize, uDiscI, uHalo, uStarGain, 0.0, uTime);
-        // below the waterline the dome is simply dark; the lake covers it
+        vec3 col = swSky(d, uNoise, uZenith, uHorizon, uGlow, uLightDir, uLightCol,
+                         uGlowI, uDiscSize, uDiscI, uHalo, uDetailGain, uDetailSoft, uTime);
+        // below the waterline the dome is simply the ground colour; the lake
+        // covers it, and what shows past the lake's edges is the far bank
         col = mix(col, uGround, 1.0 - smoothstep(-0.06, 0.004, d.y));
         gl_FragColor = vec4(col, 1.0);
       }
@@ -148,14 +164,19 @@ export function createSky(scene, camera, renderer, ctx) {
   scene.add(dome);
 
   /* ── light ───────────────────────────────────────────────────────────────
-   * One key from the moon, one very cold hemisphere so nothing is pure black,
-   * and a faint bounce off the water. A moon is about a hundred-thousandth of
-   * the sun; what makes a night scene read is contrast and silhouette, not
-   * how many lights are in it.
+   * One key, one hemisphere so nothing is pure black, one ambient, and a faint
+   * bounce off the water. Four lights at either hour; what the hour changes is
+   * the ratio between them, and that ratio is most of the difference. A moon is
+   * a hundred-thousandth of the sun and what makes the night read is contrast
+   * and silhouette. By day the sky itself becomes a second light — an enormous
+   * soft box, and the only reason a shadow on a shore rock reads blue rather
+   * than black — but it stays well under the key, because a fill run up near
+   * the key's own strength is what "brighter" looks like when it has been
+   * mistaken for "daylight".
    * ────────────────────────────────────────────────────────────────────── */
 
-  const key = new THREE.DirectionalLight(0xc8d8f0, 1.35);
-  key.position.copy(moonDir).multiplyScalar(90);
+  const key = new THREE.DirectionalLight(L0.keyCol, L0.keyI);
+  key.position.copy(lightDir).multiplyScalar(90);
   key.target.position.set(0, 0, -18);
   key.castShadow = !!preset.shadows;
   if (preset.shadows) {
@@ -170,14 +191,14 @@ export function createSky(scene, camera, renderer, ctx) {
   scene.add(key);
   scene.add(key.target);
 
-  const hemi = new THREE.HemisphereLight(0x1a2740, 0x05070c, 0.75);
+  const hemi = new THREE.HemisphereLight(L0.hemiSky, L0.hemiGround, L0.hemiI);
   scene.add(hemi);
 
-  const ambient = new THREE.AmbientLight(0x0d1526, 0.80);
+  const ambient = new THREE.AmbientLight(L0.ambCol, L0.ambI);
   scene.add(ambient);
 
-  // the lake throwing a little of the moon back up under the shore rocks
-  const bounce = new THREE.DirectionalLight(0x233450, 0.32);
+  // the lake throwing a little of the sky back up under the shore rocks
+  const bounce = new THREE.DirectionalLight(L0.bounceCol, L0.bounceI);
   bounce.position.set(0.1, -0.6, -1);
   scene.add(bounce);
 
@@ -195,22 +216,26 @@ export function createSky(scene, camera, renderer, ctx) {
   const composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
 
+  const g = curves.grade;
+
   let bloomPass = null;
   if (preset.bloom) {
-    // The moon and its path on the water are the only things that should ever
-    // cross the threshold. A wide bloom on a night scene is fog, not light.
-    bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.24, 0.62, 0.72);
+    // Only genuine light should ever cross the threshold. A wide bloom on a
+    // night scene is fog rather than light; on a daylight one it is paste, and
+    // it is the single fastest way to turn a clear morning into a postcard —
+    // which is why the day's numbers here are a third of the night's.
+    bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(size.x, size.y), g.bloom(0), g.bloomRadius, g.bloomThreshold(0),
+    );
     composer.addPass(bloomPass);
   }
   composer.addPass(new OutputPass());
 
   const gradePass = new ShaderPass(GradeShader);
   gradePass.material.toneMapped = false;
-  if (!preset.bloom) {
-    gradePass.uniforms.uAberration.value = 0.0;
-    gradePass.uniforms.uGrain.value = 0.010;
-  }
-  const g = curves.grade;
+  gradePass.uniforms.uAberration.value = preset.bloom ? g.aberration : 0.0;
+  gradePass.uniforms.uGrain.value = preset.bloom ? g.grain : g.grainLow;
+  gradePass.uniforms.uSaturate.value = g.saturate || 0.0;
   gradePass.uniforms.uShadowTint.value.setRGB(g.shadowTint[0], g.shadowTint[1], g.shadowTint[2]);
   gradePass.uniforms.uHighTint.value.setRGB(g.highTint[0], g.highTint[1], g.highTint[2]);
   composer.addPass(gradePass);
@@ -233,16 +258,36 @@ export function createSky(scene, camera, renderer, ctx) {
   function update(dt, state) {
     time += dt;
     const s = state ? clamp(state.settle, 0, 1) : 0;
+    const L = (state && state.light) || mood.light(state);
 
     uniforms.uTime.value = time;
     dome.position.copy(camera.position);
 
-    // The sky itself does not answer to the stillness — only the reflection of
-    // it does. What the settle moves up here is the haze between: less of it
-    // means more of the field of stars was always there to be seen.
-    uniforms.uStarGain.value = 0.72 + 0.42 * s;
-    key.intensity = 1.35 + 0.16 * s;
-    hemi.intensity = 0.75 - 0.08 * s;
+    // Everything celestial comes off the one table main.js filled in for this
+    // frame. At night almost none of it moves; by day the sun climbs, the sky
+    // deepens and the haze thins — and the water is reading the same numbers,
+    // so the reflection cannot drift out of agreement with the sky above it.
+    uniforms.uZenith.value.setHex(L.zenith);
+    uniforms.uHorizon.value.setHex(L.horizon);
+    uniforms.uGlow.value.setHex(L.glow);
+    uniforms.uLightCol.value.setHex(L.discCol);
+    uniforms.uGlowI.value = L.glowI;
+    uniforms.uDiscSize.value = L.discSize;
+    uniforms.uDiscI.value = L.discI;
+    uniforms.uHalo.value = L.halo;
+    uniforms.uDetailGain.value = L.detailGain;
+    uniforms.uDetailSoft.value = L.detailSoft;
+
+    lightDir.set(L.dir[0], L.dir[1], L.dir[2]).normalize();
+    uniforms.uLightDir.value.copy(lightDir);
+    key.position.copy(lightDir).multiplyScalar(90);
+    key.color.setHex(L.keyCol);
+    key.intensity = L.keyI;
+    hemi.color.setHex(L.hemiSky);
+    hemi.groundColor.setHex(L.hemiGround);
+    hemi.intensity = L.hemiI;
+    ambient.intensity = L.ambI;
+    bounce.intensity = L.bounceI;
 
     gradePass.uniforms.uTime.value = time;
     gradePass.uniforms.uVignette.value = g.vignette(s);
@@ -253,5 +298,5 @@ export function createSky(scene, camera, renderer, ctx) {
     }
   }
 
-  return { update, render, resize, moonDir };
+  return { update, render, resize };
 }

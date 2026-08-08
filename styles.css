@@ -137,6 +137,34 @@ canvas#scene {
 .title.is-dusk .title-controls { color: rgba(206, 220, 236, 0.60); }
 .title.is-dusk .title-hint { color: rgba(206, 220, 236, 0.40); }
 
+/* Still Water's morning is the brightest card in the sanctuary: a pale sky
+   over paler water, with the type sitting exactly where the horizon is. Dusk's
+   scrim is not enough here — a clear morning has no dark quarter to hide type
+   in — so the gradient is warmer and denser at the edges while staying open in
+   the middle, and every line carries its own halo. Scoped to the day: the
+   moonlit card is untouched. */
+.title.is-day {
+  background:
+    radial-gradient(118% 84% at 50% 46%, rgba(12, 24, 38, 0.34) 0%, rgba(12, 24, 38, 0.62) 58%, rgba(10, 20, 33, 0.86) 100%);
+}
+.title.is-day .paths-tagline,
+.title.is-day .hours-tagline,
+.title.is-day .title-controls,
+.title.is-day .title-hint,
+.title.is-day .path,
+.title.is-day .hour {
+  text-shadow: 0 1px 18px rgba(8, 18, 30, 0.95), 0 0 5px rgba(8, 18, 30, 0.8);
+}
+.title.is-day .paths-tagline { color: rgba(226, 236, 246, 0.80); }
+.title.is-day .hours-tagline { color: rgba(226, 236, 246, 0.76); }
+.title.is-day .path,
+.title.is-day .hour { color: rgba(228, 238, 248, 0.62); }
+/* Not gold. The chosen word should read as the sky the card is standing in. */
+.title.is-day .path.is-current,
+.title.is-day .hour.is-current { color: rgba(214, 236, 252, 0.97); }
+.title.is-day .title-controls { color: rgba(220, 232, 244, 0.62); }
+.title.is-day .title-hint { color: rgba(220, 232, 244, 0.44); }
+
 .title-inner {
   text-align: center;
   max-width: 34rem;

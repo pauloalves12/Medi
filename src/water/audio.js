@@ -11,14 +11,14 @@
  * further and further apart, and opening the reverb as it goes. What is left at
  * the end is a drone, a long tail, and a great deal of room — the same lake with
  * everything that was moving on it stopped.
+ *
+ * The hour changes the room, not the shape. MOONLIT is a bowl of rock at night:
+ * a long cold tail, a bed that closes down to a drone, and something calling in
+ * the trees once in a while. DAY is open air over water: a shorter, drier tail,
+ * a bed that stays bright and merely gets quieter, and birds. Everything that
+ * differs is a number in `mood.curves.audio` — the arc through the phases is the
+ * same arc, and PHASE_MIX below is shared.
  */
-
-import { curves } from './mood.js';
-
-const PAD_NOTES = [
-  110.00, 130.81, 146.83, 164.81, 196.00,   // A2 C3 D3 E3 G3
-  220.00, 261.63, 293.66, 329.63, 392.00,   // A3 C4 D4 E4 G4
-];
 
 const PHASE_MIX = {
   title:      { wind: 0.80, lap: 0.55, drone: 0.50, pad: 0.22 },
@@ -34,7 +34,11 @@ const PHASE_MIX = {
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-export function createLakeAudio() {
+export function createLakeAudio(ctx) {
+  const curves = ctx.mood.curves;
+  const A = curves.audio;
+  const PAD_NOTES = A.padNotes;
+
   let ac = null;
   let ready = false;
 
@@ -76,7 +80,7 @@ export function createLakeAudio() {
     return buf;
   }
 
-  /** A bigger, colder room than Ascent's: a bowl of rock with water in it. */
+  /** The hour's room. See `mood.curves.audio.room`. */
   function makeImpulse(seconds, decay) {
     const n = Math.floor(ac.sampleRate * seconds);
     const buf = ac.createBuffer(2, n, ac.sampleRate);
@@ -125,7 +129,7 @@ export function createLakeAudio() {
     duck.connect(master);
 
     convolver = ac.createConvolver();
-    convolver.buffer = makeImpulse(5.2, 2.2);
+    convolver.buffer = makeImpulse(A.room.seconds, A.room.decay);
     wetGain = ac.createGain();
     wetGain.gain.value = 0.8;
     convolver.connect(wetGain);
@@ -337,22 +341,30 @@ export function createLakeAudio() {
 
   /* ── incidental ─────────────────────────────────────────────────────────── */
 
+  /**
+   * One incidental sound. Which of the three it is comes off the hour's own
+   * weights: at night the distant call is the rarest thing on the lake and the
+   * shore is the commonest, and in the morning that order is the other way
+   * round and the call sits an octave and a half higher. Nothing else about
+   * the bed says which hour it is, and it does not need to.
+   */
   function sparseEvent() {
     const t = ac.currentTime + 0.02;
-    const kind = Math.random();
-    if (kind < 0.42) {
+    const S = A.sparse;
+    const kind = Math.random() * (S.lap + S.tree + S.call);
+    if (kind < S.lap) {
       // a single lap against a stone somewhere along the shore
       const bp = noiseHit(fxBus.node, t, 0.75, 'bandpass', 340 + Math.random() * 260, 2.2, 0.075, 0.06);
       bp.frequency.linearRampToValueAtTime(190, t + 0.7);
-    } else if (kind < 0.76) {
+    } else if (kind < S.lap + S.tree) {
       // something settling in the trees
       tone(fxBus.node, t, 78 + Math.random() * 34, 1.6, 0.030, 'triangle', 0.05);
       noiseHit(fxBus.node, t, 0.35, 'lowpass', 430, 0.7, 0.032, 0.02);
     } else {
-      // one distant two-note call, very rarely
-      const base = 620 + Math.random() * 260;
-      tone(fxBus.node, t, base, 0.5, 0.016, 'sine', 0.09);
-      tone(fxBus.node, t + 0.52, base * 0.84, 0.7, 0.011, 'sine', 0.12);
+      // one distant two-note call
+      const base = S.callHz + Math.random() * S.callSpread;
+      tone(fxBus.node, t, base, 0.5, S.callI, 'sine', 0.09);
+      tone(fxBus.node, t + 0.52, base * 0.84, 0.7, S.callI * 0.69, 'sine', 0.12);
     }
   }
 
@@ -393,14 +405,12 @@ export function createLakeAudio() {
     paramTimer += dt;
     if (paramTimer > 0.15) {
       paramTimer = 0;
-      const A = curves.audio;
-
       const w = (0.30 + 0.85 * gust) * A.windGain(settle);
       for (let i = 0; i < windGains.length; i++) {
         ramp(windGains[i].g.gain, windGains[i].base * w * mix.wind, 1.4);
       }
       ramp(lapBus.node.gain, A.lapGain(settle) * mix.lap, 2.0);
-      ramp(lapFilter.frequency, 470 - 180 * settle, 3.0);
+      ramp(lapFilter.frequency, A.lapCutoff(settle), 3.0);
       ramp(bedFilter.frequency, A.cutoff(settle), 3.0);
       ramp(wetGain.gain, A.wet(settle), 3.5);
       ramp(master.gain, 0.50 * A.master(settle), 3.0);
@@ -408,7 +418,7 @@ export function createLakeAudio() {
 
     sparseTimer -= dt;
     if (sparseTimer <= 0) {
-      const gap = curves.audio.sparseGap(settle);
+      const gap = A.sparseGap(settle);
       sparseTimer = gap + Math.random() * gap * 0.8;
       if (duckTarget > 0.5 && phaseName !== 'title') sparseEvent();
     }
