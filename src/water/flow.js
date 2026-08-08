@@ -78,7 +78,7 @@ export function createFlow({ env, player, ui, audio, lake, state, advance }) {
 
   function onEnter(p) {
     pt = 0;
-    if (p !== 'breathing') state.breathOpen = 0;
+    if (p !== 'breathing') { state.breathOpen = 0; state.breathTilt = 0; }
 
     if (p === 'shore') {
       // Not a cut and not a teleport: the last two metres are walked for them,
@@ -157,6 +157,7 @@ export function createFlow({ env, player, ui, audio, lake, state, advance }) {
       if (breathT > REST + 3.0) advance('reflection');
       breathT += dt;
       state.breathOpen = 0;
+      state.breathTilt = 0;
       ui.setWhisper(null);
       return;
     }
@@ -180,6 +181,7 @@ export function createFlow({ env, player, ui, audio, lake, state, advance }) {
     }
 
     state.breathOpen = open;
+    state.breathTilt = open - 0.5;
     ui.setWhisper(word);
 
     if (seg !== lastSegment) {

@@ -32,11 +32,11 @@ function mulberry32(a) {
 
 /*  y     near→ the window in z it lives in →far        scale    drift      dens */
 const BANDS = [
-  { y: 0.30, z: [-14, -38, -150, -205], s: 0.0090, dx: 0.0028, dz: 0.0008, d: 0.55, t: 0.0 },
-  { y: 0.85, z: [-22, -55, -168, -216], s: 0.0062, dx: -0.0019, dz: 0.0011, d: 0.72, t: 0.3 },
-  { y: 1.70, z: [-40, -80, -178, -224], s: 0.0041, dx: 0.0013, dz: -0.0007, d: 0.80, t: 0.6 },
-  { y: 2.90, z: [-60, -110, -186, -232], s: 0.0027, dx: -0.0009, dz: 0.0005, d: 0.90, t: 0.85 },
-  { y: 4.60, z: [-90, -150, -195, -240], s: 0.0018, dx: 0.0006, dz: 0.0004, d: 1.00, t: 1.0 },
+  { y: 0.30, z: [-7, -24, -150, -205], s: 0.0090, dx: 0.0028, dz: 0.0008, d: 0.55, t: 0.0 },
+  { y: 0.85, z: [-14, -40, -168, -216], s: 0.0062, dx: -0.0019, dz: 0.0011, d: 0.72, t: 0.3 },
+  { y: 1.70, z: [-28, -62, -178, -224], s: 0.0041, dx: 0.0013, dz: -0.0007, d: 0.80, t: 0.6 },
+  { y: 2.90, z: [-48, -92, -186, -232], s: 0.0027, dx: -0.0009, dz: 0.0005, d: 0.90, t: 0.85 },
+  { y: 4.60, z: [-76, -132, -195, -240], s: 0.0018, dx: 0.0006, dz: 0.0004, d: 1.00, t: 1.0 },
 ];
 
 export function createMist(scene, camera, ctx, deps) {
@@ -82,7 +82,7 @@ export function createMist(scene, camera, ctx, deps) {
           uDrift: { value: new THREE.Vector2(B.dx, B.dz) },
           uSharp: { value: 0.36 },
           uWindow: { value: new THREE.Vector4(B.z[0], B.z[1], B.z[2], B.z[3]) },
-          uNear: { value: 9.0 },
+          uNear: { value: 5.0 },
           uHalfX: { value: 210.0 },
         },
         vertexShader: /* glsl */`

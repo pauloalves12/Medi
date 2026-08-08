@@ -123,9 +123,11 @@ export function createLake(scene, ctx, deps) {
     let k = 0;
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
+        // z decreases along j, so the winding is the mirror of the usual one.
+        // Backwards, the whole lake is a downward-facing surface and vanishes.
         const a = j * np + i, b = a + 1, c = a + np, d = c + 1;
-        idx[k++] = a; idx[k++] = c; idx[k++] = b;
-        idx[k++] = b; idx[k++] = c; idx[k++] = d;
+        idx[k++] = a; idx[k++] = b; idx[k++] = c;
+        idx[k++] = b; idx[k++] = d; idx[k++] = c;
       }
     }
 
@@ -148,8 +150,10 @@ export function createLake(scene, ctx, deps) {
     uAmp: { value: 0.05 },
     uSwell: { value: 0.08 },
     uDetail: { value: 1.0 },
-    uShine: { value: 55 },
-    uSpecI: { value: 0.30 },
+    uShine: { value: 32 },
+    uSpecI: { value: 0.26 },
+    uPathShine: { value: 22 },
+    uPathI: { value: 0.30 },
     uBreath: { value: 0 },
     uLod: { value: 0.012 },
 
@@ -216,6 +220,7 @@ export function createLake(scene, ctx, deps) {
     fragmentShader: GLSL_NIGHT + GLSL_WAVES + /* glsl */`
       uniform sampler2D uNoise, uPano;
       uniform float uTime, uSwell, uDetail, uShine, uSpecI, uBreath, uLod;
+      uniform float uPathShine, uPathI;
       uniform vec3 uZenith, uHorizon, uGlow, uMoonDir, uMoonCol;
       uniform float uGlowI, uMoonSize, uDiscI, uHalo, uStarGain, uStarSoft;
       uniform vec3 uDeep, uShallow, uHaze;
@@ -237,16 +242,23 @@ export function createLake(scene, ctx, deps) {
         // also happens to be why distant water always looks like a mirror.
         float lod = exp(-dist * uLod);
 
-        vec2 slope = swSwellGrad(vWorld.xz, uTime) * uSwell;
+        // The swell on its own, kept: the moon path is built off this, and it
+        // has to be continuous whatever the ripple is doing.
+        vec2 broad = swSwellGrad(vWorld.xz, uTime) * uSwell;
+        vec2 slope = broad;
 
-        // Two scrolling taps of the shared noise, read as a vector field rather
-        // than a height — one fetch per octave instead of three, and a ripple
-        // normal does not care that it is not anybody's true gradient.
+        // Three scrolling taps of the shared noise, read as a vector field
+        // rather than a height — one fetch per octave instead of three, and a
+        // ripple normal does not care that it is not anybody's true gradient.
+        // The third octave is what turns the glitter from countable specks into
+        // a texture; it is also the first thing distance takes away.
         vec2 q1 = vWorld.xz * 0.55 + vec2(uTime * 0.024, uTime * -0.015);
         vec2 q2 = vWorld.xz * 1.63 + vec2(uTime * -0.019, uTime * 0.027);
+        vec2 q3 = vWorld.xz * 4.10 + vec2(uTime * 0.031, uTime * 0.022);
         vec2 r1 = texture2D(uNoise, q1).rg - 0.5;
         vec2 r2 = texture2D(uNoise, q2).rg - 0.5;
-        slope += (r1 + r2 * 0.62) * uDetail * lod * 0.30;
+        vec2 r3 = texture2D(uNoise, q3).rg - 0.5;
+        slope += (r1 + r2 * 0.62 + r3 * 0.38 * lod) * uDetail * lod * 0.30;
 
         vec2 d2 = vWorld.xz - uRingC;
         float rd = length(d2);
@@ -280,11 +292,21 @@ export function createLake(scene, ctx, deps) {
         // depth as colour: the shelf under the shore against the open middle
         vec3 body = mix(uShallow, uDeep, smoothstep(0.15, 7.0, vDepth));
         body = mix(body * 1.55, body, smoothstep(0.05, 0.9, vDepth));
+        // Light that went in and came back out. Without it the water at the
+        // player's own feet — where almost nothing reflects — is simply black.
+        body += uMoonCol * 0.007 * (0.35 + 0.65 * max(0.0, -V.y));
 
         vec3 col = mix(body, refl, fres);
 
-        // the moon path proper — the scatter around the mirror point
+        // The moon path, in two parts. The broad lobe comes off the swell alone
+        // and is continuous by construction — it is the column. The tight one
+        // comes off the full normal and only fires where a ripple crest happens
+        // to face the moon — it is the glitter riding on the column. Either
+        // alone reads wrong: the first as a painted smear, the second as a
+        // handful of fireflies.
         vec3 H = normalize(uMoonDir - V);
+        vec3 Nb = normalize(vec3(-broad.x, 1.0, -broad.y));
+        col += uMoonCol * pow(max(dot(Nb, H), 0.0), uPathShine) * uPathI;
         col += uMoonCol * pow(max(dot(N, H), 0.0), uShine) * uSpecI;
 
         col += uMoonCol * ringGlow * uRingLight;
@@ -346,6 +368,8 @@ export function createLake(scene, ctx, deps) {
     uniforms.uDetail.value = w.detail(s);
     uniforms.uShine.value = w.shine(s);
     uniforms.uSpecI.value = w.specular(s);
+    uniforms.uPathShine.value = w.pathShine(s);
+    uniforms.uPathI.value = w.pathI(s);
     uniforms.uHalo.value = w.halo(s);
     uniforms.uStarGain.value = w.starGain(s);
     uniforms.uStarSoft.value = w.starSoft(s);
@@ -353,7 +377,7 @@ export function createLake(scene, ctx, deps) {
     // a broken surface cannot hold an edge, so the reflected disc softens with
     // everything else rather than staying a hard dot inside a smear
     uniforms.uMoonSize.value = 0.00026 * (1 + 2.2 * (1 - s));
-    uniforms.uBreath.value = state ? clamp(state.breathOpen, 0, 1) - 0.5 : 0;
+    uniforms.uBreath.value = state ? clamp(state.breathTilt, -0.5, 0.5) : 0;
   }
 
   return { update, pulse, material };

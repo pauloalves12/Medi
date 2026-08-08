@@ -117,6 +117,11 @@ const state = {
   activity: 0,
 
   breathOpen: 0,      // 0..1 lungs, written by flow.js during 'breathing'
+  // The same signal centred on zero, and *only* while somebody is breathing.
+  // The lake stretches its reflection by this, and a resting value of -0.5
+  // would have been a permanent stretch — enough to slide the reflected moon
+  // off the mirror point and lose it for the whole piece.
+  breathTilt: 0,
   windGust: 0,        // 0..1 slow envelope, driven here, read by everyone
 };
 

@@ -251,7 +251,11 @@ export function createScene(scene, ctx) {
         // wet stone at the waterline, dry soil above it, bare rock high up
         c.copy(cSoil).lerp(cRock, smoothstep(1.2, 5.5, y));
         c.lerp(cWet, smoothstep(0.55, -0.35, y));
-        c.multiplyScalar(0.82 + 0.30 * (fbm(x * 0.08, z * 0.08, 3) + 0.5));
+        // Broad mottling, and plenty of it. A smooth ramp at these values reads
+        // as a snowfield however dark it is — what says "ground" is that no two
+        // square metres of it are the same.
+        c.multiplyScalar(0.60 + 0.78 * (fbm(x * 0.08, z * 0.08, 3) + 0.5));
+        c.multiplyScalar(0.86 + 0.28 * (fbm(x * 0.34, z * 0.34, 2) + 0.5));
         col[p] = c.r; col[p + 1] = c.g; col[p + 2] = c.b;
         p += 3;
       }
@@ -260,9 +264,14 @@ export function createScene(scene, ctx) {
     let k = 0;
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
+        // z *decreases* along j here — the grid marches away from the shore —
+        // so the winding is the mirror of the one a increasing-z grid wants.
+        // Get it backwards and every normal points at the lake bed: the mesh is
+        // back-face culled, nothing lights, and the sky dome shows through where
+        // the ground should be.
         const a = j * np + i, b = a + 1, d = a + np, e = d + 1;
-        idx[k++] = a; idx[k++] = d; idx[k++] = b;
-        idx[k++] = b; idx[k++] = d; idx[k++] = e;
+        idx[k++] = a; idx[k++] = b; idx[k++] = d;
+        idx[k++] = b; idx[k++] = e; idx[k++] = d;
       }
     }
 

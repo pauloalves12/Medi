@@ -39,17 +39,28 @@ export const PALETTE = {
   moon: 0xdde7f5,
   ground: 0x03050a,      // the dome below the waterline
 
-  deep: 0x04060c,        // open water, straight down
-  shallow: 0x0a111d,     // over the shelf near the shore
+  deep: 0x06090f,        // open water, straight down
+  shallow: 0x0d1522,     // over the shelf near the shore
   haze: 0x0c1322,        // what distance dissolves everything into
 
   fogA: 0x0a101c,
 
-  rock: 0x151922,
-  soil: 0x0d1016,
-  pine: 0x070d10,
-  grass: 0x121a1c,
-  reed: 0x161c1a,
+  // ── albedo ────────────────────────────────────────────────────────────────
+  // Mixed against the render, not against the swatch. These read far too light
+  // as hex — a wet shore rock is not #424b5a — but the light falling on them is
+  // a moon: about a quarter of a unit, once its colour and the fill are in. An
+  // albedo picked to *look* like moonlit rock arrives as 8/255 and the whole
+  // near half of the frame goes black. Ascent has the same note in reverse; the
+  // lesson both times is that lifting the light instead only gives grey a
+  // suntan, and here it would take the mountains and the water's body with it.
+  //
+  //   linear(0x3d) ≈ 0.047 × ≈0.29 of light ≈ 0.0135 → about 33/255 on screen,
+  //   which is the value the middle mountain band sits at.
+  rock: 0x38404e,
+  soil: 0x2e3644,
+  pine: 0x1c262e,          // the pines stay silhouettes; that is their job
+  grass: 0x252e2a,
+  reed: 0x2a322e,
 };
 
 /* ── the mountains ────────────────────────────────────────────────────────────
@@ -173,11 +184,23 @@ export const curves = {
     swell: (s) => 0.085 * (1 - 0.80 * s) + 0.006,
     // how much of the small ripple survives; at full settle almost none does
     detail: (s) => 1 - 0.93 * s,
-    // the moon path: a wide scatter of glitter tightening onto the mirror point
-    shine: (s) => 55 + 700 * s * s,
-    specular: (s) => 0.30 + 0.30 * s,
+    // ── the moon path, in two parts ─────────────────────────────────────────
+    // The glitter alone was a scatter of separate points a metre apart, because
+    // only the crests of the ripple ever satisfy the mirror condition. The path
+    // needs a floor under it: a broad lobe off the swell that is continuous by
+    // construction, with the ripple's own highlights riding on top. Together
+    // they read as one shimmering column that tightens onto the mirror point
+    // rather than as a handful of fireflies.
+    // Both are quiet. A moon is a hundred-thousandth of a sun and the water is
+    // still the dark half of the frame; the path has to be the brightest thing
+    // *on the lake* without becoming the brightest thing in the picture, which
+    // is the moon and stays the moon.
+    shine: (s) => 60 + 700 * s * s,          // the glitter on the ripple
+    specular: (s) => 0.14 + 0.16 * s,
+    pathShine: (s) => 60 + 900 * s * s,      // the column under it
+    pathI: (s) => 0.11 + 0.09 * s,
     // how much the reflection remembers what it is reflecting
-    halo: (s) => 60 + 640 * s * s,
+    halo: (s) => 34 + 660 * s * s,
     starGain: (s) => 0.10 + 0.95 * s,
     starSoft: (s) => 1 - s,
     // the far water dissolving into the horizon
@@ -187,7 +210,7 @@ export const curves = {
   mist: {
     // `t` is the band, 0 nearest. The far bands are what hides the far shore,
     // so they hold on longest — clarity arrives across the water, not at once.
-    density: (s, t) => Math.max(0, (0.30 - 0.235 * s) * (0.55 + 0.75 * t)),
+    density: (s, t) => Math.max(0, (0.62 - 0.50 * s) * (0.55 + 0.75 * t)),
     // raising the threshold breaks a sheet into separated patches rather than
     // fading it uniformly: the mist draws apart instead of switching off
     sharp: (s) => 0.34 + 0.30 * s,
@@ -199,7 +222,7 @@ export const curves = {
   motes: (s) => 0.18 + 0.34 * s,
 
   grade: {
-    vignette: (s) => 0.42 - 0.08 * s,
+    vignette: (s) => 0.34 - 0.07 * s,
     bloom: (s) => 0.22 + 0.14 * s,
     bloomThreshold: (s) => 0.72 - 0.10 * s,
     exposure: (s) => 1.0 + 0.10 * s,

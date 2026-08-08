@@ -167,8 +167,13 @@ async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
   await run(page, 2.5);
   await shot(page, `${prefix}/3-arrival`);
 
-  // disturbed: keep looking around, hard, so stillness stays down
-  for (let i = 0; i < 6; i++) { await look(page, 210, i % 2 ? 60 : -60, 0.5); await run(page, 0.4); }
+  // Disturbed: look around hard so stillness stays down, but alternate the
+  // direction so the net heading is unchanged — this frame has to be the same
+  // frame as the settled ones or it compares nothing.
+  for (let i = 0; i < 6; i++) {
+    await look(page, i % 2 ? 210 : -210, i % 2 ? 60 : -60, 0.5);
+    await run(page, 0.4);
+  }
   await shot(page, `${prefix}/4-disturbed`);
 
   // then stop, and let it settle into the breathing

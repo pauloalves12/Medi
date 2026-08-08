@@ -154,7 +154,7 @@ export function createSky(scene, camera, renderer, ctx) {
    * how many lights are in it.
    * ────────────────────────────────────────────────────────────────────── */
 
-  const key = new THREE.DirectionalLight(0xc8d8f0, 0.62);
+  const key = new THREE.DirectionalLight(0xc8d8f0, 1.35);
   key.position.copy(moonDir).multiplyScalar(90);
   key.target.position.set(0, 0, -18);
   key.castShadow = !!preset.shadows;
@@ -170,14 +170,14 @@ export function createSky(scene, camera, renderer, ctx) {
   scene.add(key);
   scene.add(key.target);
 
-  const hemi = new THREE.HemisphereLight(0x1a2740, 0x05070c, 0.42);
+  const hemi = new THREE.HemisphereLight(0x1a2740, 0x05070c, 0.75);
   scene.add(hemi);
 
-  const ambient = new THREE.AmbientLight(0x0d1526, 0.55);
+  const ambient = new THREE.AmbientLight(0x0d1526, 0.80);
   scene.add(ambient);
 
   // the lake throwing a little of the moon back up under the shore rocks
-  const bounce = new THREE.DirectionalLight(0x233450, 0.20);
+  const bounce = new THREE.DirectionalLight(0x233450, 0.32);
   bounce.position.set(0.1, -0.6, -1);
   scene.add(bounce);
 
@@ -241,8 +241,8 @@ export function createSky(scene, camera, renderer, ctx) {
     // it does. What the settle moves up here is the haze between: less of it
     // means more of the field of stars was always there to be seen.
     uniforms.uStarGain.value = 0.72 + 0.42 * s;
-    key.intensity = 0.62 + 0.10 * s;
-    hemi.intensity = 0.42 - 0.06 * s;
+    key.intensity = 1.35 + 0.16 * s;
+    hemi.intensity = 0.75 - 0.08 * s;
 
     gradePass.uniforms.uTime.value = time;
     gradePass.uniforms.uVignette.value = g.vignette(s);
