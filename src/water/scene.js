@@ -71,25 +71,40 @@ function lakeFloor(z) {
   return -0.30 - 5.6 * (u * u * (3 - 2 * u));
 }
 
+/** Where the stands of trees are on the far shore. Uneven on purpose. */
+const FAR_CLUMPS = [-134, -101, -72, -31, 8, 27, 66, 112, 147];
+
 function lobe(x, z, cx, cz, rx, rz, h) {
   const a = (x - cx) / rx, b = (z - cz) / rz;
   const d = a * a + b * b;
   return d >= 1 ? 0 : h * Math.pow(1 - d, 1.55);
 }
 
-/** The band the lake ends against, two hundred metres out. */
-function farShore(z) {
-  return -0.35 + 7.0 * smoothstep(-198, -238, z);
+/**
+ * The band the lake ends against, two hundred metres out.
+ *
+ * The wobble is the point. A shoreline that is purely a function of z is a
+ * ruled line across the whole frame — the hardest edge in the picture and the
+ * one thing that most says "flat geometry". Two incommensurate terms in x move
+ * it back and forth by about eight metres, which at that distance is a coast
+ * with bays in it rather than a drawn rule.
+ */
+function farShore(x, z) {
+  const wob = Math.sin(x * 0.031 + 1.7) * 5.5 + Math.sin(x * 0.083 + 4.1) * 2.6;
+  return -0.35 + 7.0 * smoothstep(-198 + wob, -238 + wob, z);
 }
 
 export function groundHeight(x, z) {
   if (!Number.isFinite(x) || !Number.isFinite(z)) return 0;
 
   // bank and lake bed, blended through each other so the shoreline is a curve
-  // rather than a seam — the crossing through zero is the waterline
-  const k = smoothstep(SHORE_Z - 1.6, SHORE_Z + 1.6, z);
+  // rather than a seam — the crossing through zero is the waterline. The same
+  // wobble the far shore gets, at a metre's scale: the near waterline was a
+  // clean diagonal against the water and read as cut paper.
+  const wob = Math.sin(x * 0.19 + 0.7) * 0.55 + Math.sin(x * 0.47 + 2.9) * 0.28;
+  const k = smoothstep(SHORE_Z - 1.6 + wob, SHORE_Z + 1.6 + wob, z);
   let y = lerp(lakeFloor(z), bankProfile(z), k);
-  y = Math.max(y, farShore(z));
+  y = Math.max(y, farShore(x, z));
 
   // the two wooded headlands that frame the view
   y += lobe(x, z, -46, -30, 26, 54, 6.0);
@@ -251,11 +266,16 @@ export function createScene(scene, ctx) {
         // wet stone at the waterline, dry soil above it, bare rock high up
         c.copy(cSoil).lerp(cRock, smoothstep(1.2, 5.5, y));
         c.lerp(cWet, smoothstep(0.55, -0.35, y));
-        // Broad mottling, and plenty of it. A smooth ramp at these values reads
-        // as a snowfield however dark it is — what says "ground" is that no two
-        // square metres of it are the same.
+        // Broad mottling, and plenty of it, at three scales. A smooth ramp at
+        // these values reads as a snowfield however dark it is — what says
+        // "ground" is that no two square metres of it are the same. The third
+        // octave is the one the eye notices underfoot, where the terrain grid
+        // is fine enough to carry it.
         c.multiplyScalar(0.60 + 0.78 * (fbm(x * 0.08, z * 0.08, 3) + 0.5));
         c.multiplyScalar(0.86 + 0.28 * (fbm(x * 0.34, z * 0.34, 2) + 0.5));
+        c.multiplyScalar(0.90 + 0.20 * (fbm(x * 1.15, z * 1.15, 2) + 0.5));
+        // damp ground gathers in the hollows and reads darker than the rises
+        c.multiplyScalar(1.0 - 0.22 * smoothstep(0.55, -0.15, y - bankProfile(z) * 0.6));
         col[p] = c.r; col[p + 1] = c.g; col[p + 2] = c.b;
         p += 3;
       }
@@ -306,8 +326,11 @@ export function createScene(scene, ctx) {
     return g;
   }
 
+  // Not chalk. A shore stone at night is damp, and damp stone keeps a narrow
+  // moon edge on it — that highlight is most of what says "stone" rather than
+  // "pale polygon" at this light level.
   const matRock = new THREE.MeshStandardMaterial({
-    color: PALETTE.rock, roughness: 0.93, metalness: 0.0,
+    color: PALETTE.rock, roughness: 0.78, metalness: 0.0,
   });
 
   function buildStone() {
@@ -342,11 +365,14 @@ export function createScene(scene, ctx) {
       const dx = Math.abs(x - pathCenterX(z));
       if (dx < 2.6 && z > SHORE_Z) continue;
       if (Math.hypot(x - STONE.x, z - STONE.z) < 3.6) continue;
-      const sc = 0.30 + Math.pow(rnd(), 1.9) * 1.5;
-      s.set(sc * (0.8 + rnd() * 0.5), sc * (0.5 + rnd() * 0.5), sc * (0.8 + rnd() * 0.5));
-      e.set(rnd() * 0.5, rnd() * 6.28, rnd() * 0.5);
+      // Wider spread on every axis, and each one bedded into the ground by its
+      // own amount — a scatter of stones that all sit the same way in the soil
+      // reads as a scatter of props.
+      const sc = 0.26 + Math.pow(rnd(), 2.1) * 1.8;
+      s.set(sc * (0.72 + rnd() * 0.68), sc * (0.42 + rnd() * 0.62), sc * (0.72 + rnd() * 0.68));
+      e.set((rnd() - 0.5) * 0.9, rnd() * 6.28, (rnd() - 0.5) * 0.9);
       q.setFromEuler(e);
-      v.set(x, y - sc * 0.22, z);
+      v.set(x, y - sc * (0.16 + rnd() * 0.26), z);
       m.compose(v, q, s);
       mesh.setMatrixAt(placed++, m);
     }
@@ -417,9 +443,12 @@ export function createScene(scene, ctx) {
         x = (left ? -46 : 52) + (rnd() - 0.5) * (left ? 46 : 40);
         z = (left ? -30 : -24) + (rnd() - 0.5) * (left ? 96 : 86);
       } else {
-        // the far shore, a row of silhouettes on the horizon
+        // The far shore. Sown evenly it reads as a picket fence two hundred
+        // metres long; trees grow in stands, so these go in stands, and the
+        // gaps between them are what make the shoreline a place.
+        const cx0 = FAR_CLUMPS[(rnd() * FAR_CLUMPS.length) | 0];
         z = -200 - rnd() * 34;
-        x = (rnd() - 0.5) * 300;
+        x = cx0 + (rnd() - 0.5) * 42;
       }
       const y = groundHeight(x, z);
       if (y < 0.55) continue;
@@ -427,9 +456,12 @@ export function createScene(scene, ctx) {
       if (z > SHORE_Z && z < 40 && dx < 4.6) continue;
       if (Math.hypot(x - STONE.x, z - STONE.z) < 7) continue;
 
-      const sc = 0.62 + Math.pow(rnd(), 1.5) * 1.5;
-      s.set(sc * (0.85 + rnd() * 0.3), sc * (0.85 + rnd() * 0.45), sc * (0.85 + rnd() * 0.3));
-      e.set((rnd() - 0.5) * 0.05, rnd() * 6.28, (rnd() - 0.5) * 0.05);
+      // A stand of pines is not a row of one pine. Widening the scale range and
+      // letting them lean a little is the cheapest thing that breaks up an
+      // instanced silhouette.
+      const sc = 0.52 + Math.pow(rnd(), 1.9) * 2.2;
+      s.set(sc * (0.76 + rnd() * 0.5), sc * (0.78 + rnd() * 0.62), sc * (0.76 + rnd() * 0.5));
+      e.set((rnd() - 0.5) * 0.10, rnd() * 6.28, (rnd() - 0.5) * 0.10);
       q.setFromEuler(e);
       v.set(x, y - 0.12, z);
       m.compose(v, q, s);
@@ -491,8 +523,11 @@ export function createScene(scene, ctx) {
     let placed = 0, guard = 0;
 
     while (placed < n && guard++ < n * 12) {
-      const z = SHORE_Z - 3 + rnd() * 30;
-      const x = pathCenterX(z) + (rnd() - 0.5) * 44;
+      // Same number of blades, spread wider. The bare pale wedge either side of
+      // the walk was the most obviously untextured thing in the frame, and
+      // covering it costs nothing that adding blades would have cost.
+      const z = SHORE_Z - 5 + rnd() * 37;
+      const x = pathCenterX(z) + (rnd() - 0.5) * 68;
       const y = groundHeight(x, z);
       if (y < -0.28 || y > 3.4) continue;
       if (Math.hypot(x - STONE.x, z - STONE.z) < 3.0) continue;

@@ -161,10 +161,14 @@ export function createMist(scene, camera, ctx, deps) {
       const overWater = rnd() < 0.62;
       const z = overWater ? -2 - Math.pow(rnd(), 0.7) * 52 : 2 + rnd() * 32;
       const x = (rnd() - 0.5) * (overWater ? 52 : 30);
-      const y = (overWater ? 0.15 : deps.groundHeight(x, z) + 0.2) + Math.pow(rnd(), 1.5) * 3.4;
+      // Spread up as well as out. Packed into a metre of air above the water
+      // they resolve into a horizontal band, and a band of bright dots at a
+      // fixed height reads as fireflies rather than as air.
+      const y = (overWater ? 0.15 : deps.groundHeight(x, z) + 0.2) + Math.pow(rnd(), 1.1) * 6.0;
       pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z;
       seed[i] = rnd() * 100;
-      scale[i] = 0.9 + Math.pow(rnd(), 2.6) * 3.4;
+      // Small, and mostly very small. The few large ones were the whole problem.
+      scale[i] = 0.55 + Math.pow(rnd(), 3.2) * 1.9;
       drift[i] = 0.18 + rnd() * 0.7;
     }
 
@@ -194,8 +198,8 @@ export function createMist(scene, camera, ctx, deps) {
           p.z += cos(uTime * 0.15 + s * 4.7) * aDrift * 1.1;
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mv;
-          gl_PointSize = clamp(aScale * uPix / max(0.5, -mv.z), 0.7, 6.0);
-          vTw = 0.4 + 0.6 * (0.5 + 0.5 * sin(uTime * 1.1 + s * 11.0));
+          gl_PointSize = clamp(aScale * uPix / max(0.5, -mv.z), 0.6, 3.2);
+          vTw = 0.28 + 0.72 * (0.5 + 0.5 * sin(uTime * 1.1 + s * 11.0));
         }
       `,
       fragmentShader: /* glsl */`

@@ -149,7 +149,8 @@ export function createLake(scene, ctx, deps) {
 
     uAmp: { value: 0.05 },
     uSwell: { value: 0.08 },
-    uDetail: { value: 1.0 },
+    uRipple: { value: 1.0 },
+    uMicro: { value: 0.30 },
     uShine: { value: 32 },
     uSpecI: { value: 0.26 },
     uPathShine: { value: 22 },
@@ -219,7 +220,7 @@ export function createLake(scene, ctx, deps) {
     `,
     fragmentShader: GLSL_NIGHT + GLSL_WAVES + /* glsl */`
       uniform sampler2D uNoise, uPano;
-      uniform float uTime, uSwell, uDetail, uShine, uSpecI, uBreath, uLod;
+      uniform float uTime, uSwell, uRipple, uMicro, uShine, uSpecI, uBreath, uLod;
       uniform float uPathShine, uPathI;
       uniform vec3 uZenith, uHorizon, uGlow, uMoonDir, uMoonCol;
       uniform float uGlowI, uMoonSize, uDiscI, uHalo, uStarGain, uStarSoft;
@@ -241,24 +242,42 @@ export function createLake(scene, ctx, deps) {
         // Detail the eye could not resolve is detail that only aliases. This
         // also happens to be why distant water always looks like a mirror.
         float lod = exp(-dist * uLod);
+        // The shimmer is finer than the ripple, so it goes first and it goes
+        // faster — which is what makes the far half of the lake settle into a
+        // mirror while the near half is still alive.
+        float microLod = exp(-dist * uLod * 2.4);
 
         // The swell on its own, kept: the moon path is built off this, and it
         // has to be continuous whatever the ripple is doing.
         vec2 broad = swSwellGrad(vWorld.xz, uTime) * uSwell;
         vec2 slope = broad;
 
+        // ── where the air is touching the water ──────────────────────────────
+        // A real lake is never evenly calm. The wind lands in patches twenty
+        // metres across that drift and dissolve, so some of the surface is
+        // ruffled while the rest of it is glass. One very low-frequency tap
+        // buys all of that: it modulates the ripple, and further down it
+        // modulates how sharply the reflection resolves, so the mirror is
+        // crisper in some places than others rather than uniformly soft.
+        vec2 qp = vWorld.xz * 0.045 + vec2(uTime * 0.0043, uTime * -0.0026);
+        float ruffle = 0.35 + 1.15 * smoothstep(0.28, 0.82, texture2D(uNoise, qp).b);
+
         // Three scrolling taps of the shared noise, read as a vector field
         // rather than a height — one fetch per octave instead of three, and a
         // ripple normal does not care that it is not anybody's true gradient.
-        // The third octave is what turns the glitter from countable specks into
-        // a texture; it is also the first thing distance takes away.
+        // The three drift at unrelated speeds in unrelated directions so the
+        // field never resolves into a pattern.
         vec2 q1 = vWorld.xz * 0.55 + vec2(uTime * 0.024, uTime * -0.015);
         vec2 q2 = vWorld.xz * 1.63 + vec2(uTime * -0.019, uTime * 0.027);
-        vec2 q3 = vWorld.xz * 4.10 + vec2(uTime * 0.031, uTime * 0.022);
+        vec2 q3 = vWorld.xz * 5.20 + vec2(uTime * 0.300, uTime * 0.210);
         vec2 r1 = texture2D(uNoise, q1).rg - 0.5;
         vec2 r2 = texture2D(uNoise, q2).rg - 0.5;
         vec2 r3 = texture2D(uNoise, q3).rg - 0.5;
-        slope += (r1 + r2 * 0.62 + r3 * 0.38 * lod) * uDetail * lod * 0.30;
+
+        // wind ripple: answers the stillness, and only where the wind is
+        slope += (r1 + r2 * 0.62) * uRipple * ruffle * lod * 0.30;
+        // the lake's own shimmer: quieter when calm, never absent
+        slope += r3 * uMicro * mix(1.0, ruffle, 0.45) * microLod * 0.30;
 
         vec2 d2 = vWorld.xz - uRingC;
         float rd = length(d2);
@@ -282,16 +301,41 @@ export function createLake(scene, ctx, deps) {
         R.y *= 1.0 - uBreath * 0.09;
         R = normalize(R);
 
+        // Ruffled water cannot hold an edge. Letting the patch field bend the
+        // halo and the star threshold means the reflection resolves at
+        // different sharpnesses across the same lake, which is what stops it
+        // reading as one uniformly blurred image.
+        float sharp = clamp(ruffle - 0.5, 0.0, 1.0);
         vec3 refl = swWorld(R, uPano, uZenith, uHorizon, uGlow, uMoonDir, uMoonCol,
-                            uGlowI, uMoonSize, uDiscI, uHalo, uStarGain, uStarSoft, uTime);
+                            uGlowI, uMoonSize * (1.0 + sharp * 0.9), uDiscI,
+                            uHalo * mix(1.0, 0.5, sharp),
+                            uStarGain * mix(1.0, 0.72, sharp),
+                            clamp(uStarSoft + sharp * 0.30, 0.0, 1.0), uTime);
         refl *= 0.88;                            // water is not a mirror
 
+        // A slightly harder grazing response than Schlick's fifth power: the
+        // far half of a lake really does go almost fully reflective, and the
+        // softer exponent was leaving it too dark to read as water at all.
         float ndv = clamp(dot(N, -V), 0.0, 1.0);
-        float fres = 0.020 + 0.980 * pow(1.0 - ndv, 5.0);
+        float fres = 0.022 + 0.978 * pow(1.0 - ndv, 4.2);
+        // Bending the normal only shows where the reflected image has contrast
+        // in it, and most of what this lake reflects is a near-black mountain.
+        // So the patches have to reach the reflectance too: ruffled water hands
+        // back more sky and less of the dark below it, which is why a night
+        // lake is visibly mottled rather than one flat value.
+        fres = clamp(fres * (0.90 + 0.22 * (ruffle - 0.9)), 0.0, 1.0);
 
         // depth as colour: the shelf under the shore against the open middle
         vec3 body = mix(uShallow, uDeep, smoothstep(0.15, 7.0, vDepth));
-        body = mix(body * 1.55, body, smoothstep(0.05, 0.9, vDepth));
+        // Lifted less than it was. The shallows needed rescuing from black, but
+        // at 1.55 the foreground went milky and swallowed the sheen that is
+        // carrying the surface there.
+        body = mix(body * 1.32, body, smoothstep(0.05, 0.9, vDepth));
+        // Absorption. Water takes the warm end of the spectrum out first and
+        // takes more of it the further down the light has to go, so shallow
+        // water over a bed is warmer and brighter than the open middle is.
+        body *= mix(vec3(1.16, 1.12, 1.08), vec3(0.70, 0.81, 1.00),
+                    smoothstep(0.3, 8.0, vDepth));
         // Light that went in and came back out. Without it the water at the
         // player's own feet — where almost nothing reflects — is simply black.
         body += uMoonCol * 0.007 * (0.35 + 0.65 * max(0.0, -V.y));
@@ -306,10 +350,27 @@ export function createLake(scene, ctx, deps) {
         // handful of fireflies.
         vec3 H = normalize(uMoonDir - V);
         vec3 Nb = normalize(vec3(-broad.x, 1.0, -broad.y));
-        col += uMoonCol * pow(max(dot(Nb, H), 0.0), uPathShine) * uPathI;
+        // The shimmer breaks the column up from the inside — free, because the
+        // field is already fetched. Without it the path is an airbrushed smear
+        // with no grain in it, which is the other half of why calm water was
+        // reading as a solid.
+        float grain = 0.66 + 1.30 * length(r3);
+        col += uMoonCol * pow(max(dot(Nb, H), 0.0), uPathShine) * uPathI
+             * mix(1.0, grain, 0.55);
         col += uMoonCol * pow(max(dot(N, H), 0.0), uShine) * uSpecI;
+        // A wide, weak sheen over the whole moon-facing half of the lake,
+        // textured by the same shimmer. This is the term that actually carries
+        // the surface: it gives the water something of its own to show, instead
+        // of leaving it to reflect a dark mountain and look like slate.
+        col += uMoonCol * pow(max(dot(N, H), 0.0), 9.0) * 0.020
+             * (0.45 + 1.05 * length(r3)) * lod;
 
         col += uMoonCol * ringGlow * uRingLight;
+
+        // The waterline itself: a wet gleam a hand's width wide, broken up so
+        // it is a shore rather than a drawn curve.
+        float edge = (1.0 - smoothstep(0.0, 0.30, vDepth)) * smoothstep(-0.12, 0.02, vDepth);
+        col += uMoonCol * edge * 0.055 * (0.55 + 0.90 * length(r2));
 
         col = mix(col, uHaze, 1.0 - exp(-dist * uFogK));
         gl_FragColor = vec4(col, 1.0);
@@ -365,7 +426,8 @@ export function createLake(scene, ctx, deps) {
 
     uniforms.uAmp.value = w.amp(s);
     uniforms.uSwell.value = w.swell(s);
-    uniforms.uDetail.value = w.detail(s);
+    uniforms.uRipple.value = w.ripple(s);
+    uniforms.uMicro.value = w.micro(s);
     uniforms.uShine.value = w.shine(s);
     uniforms.uSpecI.value = w.specular(s);
     uniforms.uPathShine.value = w.pathShine(s);

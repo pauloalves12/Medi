@@ -181,9 +181,21 @@ export const curves = {
     // The broad swell's steepness, which is what the reflection sees. Held
     // separate from the displacement because a lake's undulation is far flatter
     // than it needs to look — the geometry is honest and the normal is staged.
-    swell: (s) => 0.085 * (1 - 0.80 * s) + 0.006,
-    // how much of the small ripple survives; at full settle almost none does
-    detail: (s) => 1 - 0.93 * s,
+    swell: (s) => 0.085 * (1 - 0.78 * s) + 0.010,
+
+    // ── the two ripples ─────────────────────────────────────────────────────
+    // `ripple` is the wind on the water and answers the stillness almost all
+    // the way down. `micro` is the lake's own shimmer and does not: it bottoms
+    // out at a sixth of its range, never at zero.
+    //
+    // That floor is the whole difference between calm water and ice. A surface
+    // with no motion left in it stops reflecting like a liquid — the moon's
+    // image goes rigid, the highlight becomes an airbrushed smear, and the eye
+    // reads the lake as a painted slab. At the floor the slope is under half a
+    // degree, which is less than the moon's own angular radius, so the disc
+    // stays whole and merely breathes.
+    ripple: (s) => 1 - 0.90 * s,
+    micro: (s) => 0.32 - 0.25 * s,
     // ── the moon path, in two parts ─────────────────────────────────────────
     // The glitter alone was a scatter of separate points a metre apart, because
     // only the crests of the ripple ever satisfy the mirror condition. The path
@@ -219,7 +231,8 @@ export const curves = {
 
   wind: (s) => 1 - 0.82 * s,
   fog: (s) => 0.0072 - 0.0034 * s,
-  motes: (s) => 0.18 + 0.34 * s,
+  // Barely there on purpose. Anything you can count is not atmosphere.
+  motes: (s) => 0.09 + 0.15 * s,
 
   grade: {
     vignette: (s) => 0.34 - 0.07 * s,
