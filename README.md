@@ -306,7 +306,19 @@ does not move the reflected ridges against each other. At two metres of travel
 and four hundred metres of distance there is nothing to see, and nothing in the
 piece invites you to test it.
 
+**The review harness cannot drive Ascent's hold-to-confirm.** Ascent asks for
+proximity *and* gaze at once, and a scripted walker that goes in a straight line
+threads between the two: by the time it is within the three metres of reach, the
+lantern is nearly abeam and the gaze term has gone. Keyboard delivery was
+verified separately (the window sees the `Space` keydown, `document.activeElement`
+is `body`, and the prompt appears with the right label), so this is a limitation
+of the harness rather than of the piece — but it means Ascent's regression
+evidence is "renders correctly at every stage, no console errors, and none of
+the modules that produce it changed" rather than a scripted play-through.
+
 **Neither experience has been run on real hardware.** Everything here was
 verified in Chromium against a software rasteriser at phone, tablet and desktop
 sizes. That checks composition, behaviour, control flow and correctness; it does
-not check frame rate on an actual phone.
+not check frame rate on an actual phone. The rasteriser is also why the harness
+shrinks the window between captures and why the review sets were taken on the
+`medium` and `low` tiers rather than `high`.

@@ -36,6 +36,10 @@ const { chromium } = loadPlaywright();
 
 const BASE = process.env.SHOT_BASE || 'http://localhost:8080';
 const OUT = resolve(process.cwd(), 'review-screenshots');
+// A software rasteriser cannot sustain the top tier at a desktop size, and the
+// tier is not what most of these shots are about. SHOT_QUALITY=medium pins it.
+const Q = process.env.SHOT_QUALITY ? `quality=${process.env.SHOT_QUALITY}` : '';
+const url = (q) => `${BASE}/?${[q, Q].filter(Boolean).join('&')}`;
 
 const DESKTOP = { width: 1440, height: 900, isMobile: false, tag: 'desktop' };
 const PHONE = { width: 390, height: 844, isMobile: true, tag: 'phone' };
@@ -78,7 +82,8 @@ async function run(page, seconds, slice = 0.045) {
 async function shot(page, name) {
   const file = `${OUT}/${name}.png`;
   mkdirSync(dirname(file), { recursive: true });
-  await page.screenshot({ path: file });
+  // A software rasteriser can take most of a minute over one full-size frame.
+  await page.screenshot({ path: file, timeout: 180000 });
   console.log('  ·', name);
 }
 
@@ -149,10 +154,63 @@ async function hold(page, seconds) {
 
 const phase = (page) => page.evaluate(() => window.__phase && window.__phase());
 
+/**
+ * Ascent tells you when you are close enough and looking at the right thing:
+ * the prompt ring appears. Driving off that rather than off coordinates means
+ * the harness needs no hooks into the piece and cannot walk past anything.
+ */
+// The prompt starts fading in 4.2 m before the hold is actually actionable, so
+// a harness that acts on "I can see it" holds from too far away and nothing
+// happens. Wait until it is nearly solid.
+const promptUp = (page, min = 0.72) => page.evaluate((m) => {
+  const el = document.querySelector('.prompt');
+  return !!el && el.classList.contains('is-on') && parseFloat(el.style.opacity || '1') >= m;
+}, min);
+
+/**
+ * Walk a leg of Ascent and take the thing at the end of it.
+ *
+ * Ascent's hold-to-confirm wants proximity *and* gaze, and the prompt starts
+ * fading in four metres before the hold is actually actionable — so a harness
+ * that walks until it can see the prompt and then holds is holding from too far
+ * away. Trying to be clever about aiming was worse: big search sweeps walk the
+ * player off the path entirely.
+ *
+ * So: two metres, then hold, then check, and repeat. It cannot overshoot,
+ * because it tries at every step of the way, and the small alternating wiggle
+ * self-cancels rather than accumulating into a wrong heading.
+ */
+async function leg(page, from, steps = 16) {
+  // ±18° either side of straight ahead, and back. The offsets cancel, so the
+  // heading at the end of a step is the heading at the start of it and the
+  // walker never drifts off the path.
+  const HEADINGS = [0, 150, -300, 150];
+  for (let i = 0; i < steps; i++) {
+    if ((await phase(page)) !== from) return true;
+    await walk(page, 1.2);
+    for (const dx of HEADINGS) {
+      if (dx) await look(page, dx, 0, 0.25);
+      await hold(page, 1.5);
+      if ((await phase(page)) !== from) return true;
+    }
+  }
+  return (await phase(page)) !== from;
+}
+
+/** Bounded wait: never let a harness loop outlive the thing it is watching. */
+async function until(page, test, seconds, step = 3.0) {
+  const rounds = Math.ceil(seconds / step);
+  for (let i = 0; i < rounds; i++) {
+    if (await test()) return true;
+    await run(page, step);
+  }
+  return test();
+}
+
 /* ── scripts ──────────────────────────────────────────────────────────────── */
 
 async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
-  const { page, context, errors } = await open(browser, `${BASE}/?experience=stillwater`, device);
+  const { page, context, errors } = await open(browser, url('experience=stillwater'), device);
   console.log(`\n${prefix} @ ${device.tag}`);
 
   await run(page, 3.2);
@@ -163,7 +221,9 @@ async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
   await shot(page, `${prefix}/2-approach`);
 
   // down the path to the shore; the arrival trigger takes it from there
-  for (let i = 0; i < 8 && (await phase(page)) === 'approach'; i++) await walk(page, 3.0);
+  await cheap(page, device, true);
+  for (let i = 0; i < 14 && (await phase(page)) === 'approach'; i++) await walk(page, 3.0);
+  await cheap(page, device, false);
   await run(page, 2.5);
   await shot(page, `${prefix}/3-arrival`);
 
@@ -178,7 +238,7 @@ async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
 
   // then stop, and let it settle into the breathing
   await cheap(page, device, true);
-  while ((await phase(page)) === 'settling') await run(page, 2.0);
+  await until(page, async () => (await phase(page)) !== 'settling', 70, 2);
   await run(page, 8.0);
   await cheap(page, device, false);
   await shot(page, `${prefix}/5-breathing`);
@@ -189,19 +249,19 @@ async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
   await shot(page, `${prefix}/6-half-settled`);
 
   await cheap(page, device, true);
-  while (['breathing', 'reflection'].includes(await phase(page))) await run(page, 3.0);
+  await until(page, async () => !['breathing', 'reflection'].includes(await phase(page)), 230, 3);
   await run(page, 6.0);
   await cheap(page, device, false);
   await shot(page, `${prefix}/7-still`);
 
   await cheap(page, device, true);
-  while ((await phase(page)) !== 'reveal') await run(page, 3.0);
+  await until(page, async () => (await phase(page)) === 'reveal', 110, 3);
   await cheap(page, device, false);
   await run(page, 14);
   await shot(page, `${prefix}/8-reveal`);
 
   await cheap(page, device, true);
-  while ((await phase(page)) !== 'complete') await run(page, 3.0);
+  await until(page, async () => (await phase(page)) === 'complete', 60, 3);
   await cheap(page, device, false);
   await run(page, 8.0);
   await shot(page, `${prefix}/9-complete`);
@@ -216,17 +276,49 @@ async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
 async function devices(browser) {
   const out = [];
   for (const d of [PHONE, TABLET, DESKTOP]) {
-    const { page, context, errors } = await open(browser, `${BASE}/?experience=stillwater`, d);
+    const { page, context, errors } = await open(browser, url('experience=stillwater'), d);
     console.log(`\nfinal @ ${d.tag}`);
     await run(page, 3.0);
     await shot(page, `stillwater-devices/${d.tag}-title`);
     await begin(page);
-    for (let i = 0; i < 9 && (await phase(page)) === 'approach'; i++) await walk(page, 3.0);
     await cheap(page, d, true);
-    while ((await phase(page)) !== 'reveal') await run(page, 4.0);
+    for (let i = 0; i < 14 && (await phase(page)) === 'approach'; i++) await walk(page, 3.0);
+    await until(page, async () => (await phase(page)) === 'reveal', 340, 4);
     await cheap(page, d, false);
     await run(page, 20);
     await shot(page, `stillwater-devices/${d.tag}-final`);
+    // the desktop pass doubles as the narrative set's last two frames
+    if (d === DESKTOP) {
+      await shot(page, 'stillwater/8-reveal');
+      await cheap(page, d, true);
+      await until(page, async () => (await phase(page)) === 'complete', 60, 3);
+      await cheap(page, d, false);
+      await run(page, 8.0);
+      await shot(page, 'stillwater/9-complete');
+    }
+    console.log(errors.length ? `  ! ${errors.length} console errors` : '  · no console errors');
+    errors.slice(0, 4).forEach((e) => console.log('    ', e));
+    out.push(...errors);
+    await context.close();
+  }
+  return out;
+}
+
+/** The same moment on all three tiers, so "low still looks like the place". */
+async function tiers(browser) {
+  const out = [];
+  for (const q of ['low', 'medium', 'high']) {
+    const { page, context, errors } = await open(browser, `${BASE}/?experience=stillwater&quality=${q}`, DESKTOP);
+    console.log(`\ntier ${q}`);
+    await begin(page);
+    await cheap(page, DESKTOP, true);
+    for (let i = 0; i < 14 && (await phase(page)) === 'approach'; i++) await walk(page, 3.0);
+    // far enough in that the lake has answered, and always the same far enough
+    await until(page, async () => (await phase(page)) === 'breathing', 130, 3);
+    await run(page, 30);
+    await cheap(page, DESKTOP, false);
+    await run(page, 1.0);
+    await shot(page, `stillwater-tiers/${q}`);
     console.log(errors.length ? `  ! ${errors.length} console errors` : '  · no console errors');
     errors.slice(0, 4).forEach((e) => console.log('    ', e));
     out.push(...errors);
@@ -237,52 +329,59 @@ async function devices(browser) {
 
 /** Ascent, end to end, for regression. */
 async function ascent(browser, mode = 'dawn') {
-  const url = mode === 'dawn' ? `${BASE}/` : `${BASE}/?mode=${mode}`;
-  const { page, context, errors } = await open(browser, url, DESKTOP);
+  const { page, context, errors } = await open(browser, url(mode === 'dawn' ? '' : `mode=${mode}`), DESKTOP);
   console.log(`\nascent ${mode}`);
   const dir = `regression/${mode}`;
 
   await run(page, 3.2);
   await shot(page, `${dir}/1-title`);
 
+  // Ascent's valley cloud sea is five near-fullscreen transparent sheets, which
+  // on a software rasteriser costs more per frame than the whole of Still
+  // Water. Everything between shots happens small.
+  const reached = {};
   await begin(page);
+  await cheap(page, DESKTOP, true);
   await run(page, 3.0);
-  await walk(page, 4.4);
-  await run(page, 1.0);
-  await hold(page, 1.6);            // the lantern
+  reached.lit = await leg(page, 'lantern');
   await run(page, 3.0);
+  await cheap(page, DESKTOP, false);
   await shot(page, `${dir}/2-lantern`);
 
-  for (let i = 0; i < 5 && (await phase(page)) === 'toOrb'; i++) await walk(page, 4.0);
-  await run(page, 1.5);
-  await hold(page, 1.6);            // the orb
+  await cheap(page, DESKTOP, true);
+  reached.breathing = await leg(page, 'toOrb');
   await run(page, 3.0);
+  await cheap(page, DESKTOP, false);
   await shot(page, `${dir}/3-orb`);
 
   await cheap(page, DESKTOP, true);
-  while ((await phase(page)) === 'breathing') await run(page, 4.0);
-  await cheap(page, DESKTOP, false);
+  await until(page, async () => (await phase(page)) !== 'breathing', 140, 4);
   await run(page, 2.0);
+  await cheap(page, DESKTOP, false);
   await shot(page, `${dir}/4-breathing-done`);
+  reached.breathingDone = (await phase(page)) === 'toShrine';
 
-  for (let i = 0; i < 7 && (await phase(page)) === 'toShrine'; i++) await walk(page, 4.0);
-  await run(page, 1.5);
-  await hold(page, 1.6);            // the bell
+  await cheap(page, DESKTOP, true);
+  reached.rung = await leg(page, 'toShrine');
   await run(page, 3.0);
+  await cheap(page, DESKTOP, false);
   await shot(page, `${dir}/5-bell-settle`);
 
   await cheap(page, DESKTOP, true);
-  while ((await phase(page)) !== 'complete') await run(page, 4.0);
+  await until(page, async () => (await phase(page)) === 'ending', 30, 3);
+  await until(page, async () => (await phase(page)) === 'complete', 70, 4);
   await cheap(page, DESKTOP, false);
   await run(page, 1.0);
   await shot(page, `${dir}/6-payoff`);
+  reached.complete = (await phase(page)) === 'complete';
   await run(page, 8.0);
   await shot(page, `${dir}/7-complete`);
 
+  console.log('  phases:', JSON.stringify(reached));
   console.log(errors.length ? `  ! ${errors.length} console errors` : '  · no console errors');
   errors.slice(0, 6).forEach((e) => console.log('    ', e));
   await context.close();
-  return errors;
+  return errors.concat(Object.values(reached).includes(false) ? ['a phase was not reached'] : []);
 }
 
 /* ── main ─────────────────────────────────────────────────────────────────── */
@@ -297,6 +396,7 @@ let errors = [];
 try {
   if (what === 'ascent') errors = await ascent(browser, arg || 'dawn');
   else if (what === 'devices') errors = await devices(browser);
+  else if (what === 'tiers') errors = await tiers(browser);
   else if (what === 'phone') errors = await stillwater(browser, PHONE, 'stillwater-phone');
   else if (what === 'tablet') errors = await stillwater(browser, TABLET, 'stillwater-tablet');
   else errors = await stillwater(browser, DESKTOP, arg || 'stillwater');
