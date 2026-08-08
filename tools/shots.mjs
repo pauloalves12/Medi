@@ -273,9 +273,10 @@ async function stillwater(browser, device = DESKTOP, prefix = 'stillwater') {
 }
 
 /** The final composition only, on three screens. */
-async function devices(browser) {
+async function devices(browser, only) {
   const out = [];
-  for (const d of [PHONE, TABLET, DESKTOP]) {
+  const list = [PHONE, TABLET, DESKTOP].filter((d) => !only || d.tag === only);
+  for (const d of list) {
     const { page, context, errors } = await open(browser, url('experience=stillwater'), d);
     console.log(`\nfinal @ ${d.tag}`);
     await run(page, 3.0);
@@ -395,7 +396,7 @@ const browser = await chromium.launch({
 let errors = [];
 try {
   if (what === 'ascent') errors = await ascent(browser, arg || 'dawn');
-  else if (what === 'devices') errors = await devices(browser);
+  else if (what === 'devices') errors = await devices(browser, arg);
   else if (what === 'tiers') errors = await tiers(browser);
   else if (what === 'phone') errors = await stillwater(browser, PHONE, 'stillwater-phone');
   else if (what === 'tablet') errors = await stillwater(browser, TABLET, 'stillwater-tablet');
