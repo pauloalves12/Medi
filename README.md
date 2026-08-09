@@ -408,6 +408,30 @@ does not move the reflected ridges against each other. At two metres of travel
 and four hundred metres of distance there is nothing to see, and nothing in the
 piece invites you to test it.
 
+**Still Water, Day: the reflected skyline does not clear with the settle, and
+the real one does.** The mountains above the water are mixed toward the haze by
+`curves.ridgeHaze`, so they thin at the arrival and come back by the end. Their
+copy in the lake is baked once at the cleared colours, because rebaking a
+1024×96 panorama is not something to do on a frame. The water's own haze term
+covers the far half of the lake, which is where most of the mirrored ridge line
+lands, so what survives is a small disagreement in the middle distance at the
+disturbed end — the mirrored mountain is slightly crisper than the one it is a
+mirror of. It is well under what the broken surface is doing to the same pixels
+at that moment, and it goes to zero as the piece arrives.
+
+**Still Water, Day: the shore rocks are one flat material.** The terrain carries
+three octaves of mottling and the instanced rocks carry none, which the night
+hides completely and a sun does not. Their albedo is held down to compensate;
+giving them per-instance colour would fix it properly, but that is shared
+geometry code and it would move the moonlit hour too.
+
+**Still Water, Day costs about 5% more per frame than the moonlit hour.** The
+cloud field is three texture fetches per sky fragment and per lit water
+fragment, which is most of the screen once you reach the shore; against that,
+the day skips the night's star loop and its per-fragment hashing. Measured at
+640×400 with the lake filling the frame, on the same software rasteriser, one
+run each — a ratio worth knowing and not a frame rate.
+
 **The review harness cannot drive Ascent's hold-to-confirm.** Ascent asks for
 proximity *and* gaze at once, and a scripted walker that goes in a straight line
 threads between the two: by the time it is within the three metres of reach, the
@@ -418,9 +442,8 @@ of the harness rather than of the piece — but it means Ascent's regression
 evidence is "renders correctly at every stage, no console errors, and none of
 the modules that produce it changed" rather than a scripted play-through.
 
-**Neither experience has been run on real hardware.** Everything here was
-verified in Chromium against a software rasteriser at phone, tablet and desktop
-sizes. That checks composition, behaviour, control flow and correctness; it does
+**Nothing here has been run on real hardware.** Everything was verified in
+Chromium against a software rasteriser at phone, tablet and desktop sizes. That checks composition, behaviour, control flow and correctness; it does
 not check frame rate on an actual phone. The rasteriser is also why the harness
 shrinks the window between captures and why the review sets were taken on the
 `medium` and `low` tiers rather than `high`.
