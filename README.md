@@ -73,11 +73,18 @@ identical at every tier.
 ```bash
 node tests/stillness.test.mjs        # the stillness curve, 26 assertions, no browser
 node tests/mood.test.mjs             # both hours' tables and contracts, no browser
+node tools/links.mjs                 # every entry point and every selector
 node tools/shots.mjs stillwater      # Still Water, the moonlit hour
 node tools/shots.mjs stillwater day  # Still Water, the morning
 node tools/shots.mjs devices         # the final composition on three screens
 node tools/shots.mjs ascent dusk     # an Ascent regression pass
 ```
+
+`tools/links.mjs` is the cheap one — it never renders past a title card, so it
+is what to run after touching `boot.js`, `experiences.js`, `ui.js` or either
+`main.js`. It checks that each URL boots the world it names, that the card
+offers the right meditations and hours with the right one chosen, that unknown
+values fall back rather than break, and that every selector lands where it says.
 
 `tools/shots.mjs` needs a static server on `:8080` and Playwright's Chromium. It
 replaces `performance.now` with a clock it advances itself, so a five-minute

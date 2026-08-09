@@ -569,6 +569,16 @@ export function createScene(scene, ctx) {
    * lies in the water are the same mountains.
    * ────────────────────────────────────────────────────────────────────────── */
 
+  // How far the skyline has dissolved into the air in front of it. The ridges
+  // are the one thing in the frame that distance is the *whole* of — they have
+  // no light on them and no material, only a value — so the atmosphere opening
+  // has to be applied to them directly. Zero at night, where the air does not
+  // visibly change and the vertex colours are the finished answer.
+  const ridgeUniforms = {
+    uRidgeHaze: { value: new THREE.Color(PALETTE.haze) },
+    uRidgeMix: { value: 0 },
+  };
+
   function buildRidges() {
     const layers = ctx.quality === 'low' ? [1, 2, 3] : [0, 1, 2, 3];
     const segs = ctx.quality === 'low' ? 150 : 260;
@@ -612,6 +622,16 @@ export function createScene(scene, ctx) {
       const mat = new THREE.MeshBasicMaterial({
         vertexColors: true, side: THREE.DoubleSide, fog: false, depthWrite: true,
       });
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uRidgeHaze = ridgeUniforms.uRidgeHaze;
+        shader.uniforms.uRidgeMix = ridgeUniforms.uRidgeMix;
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', `#include <common>
+            uniform vec3 uRidgeHaze; uniform float uRidgeMix;`)
+          .replace('#include <color_fragment>', `#include <color_fragment>
+            diffuseColor.rgb = mix(diffuseColor.rgb, uRidgeHaze, uRidgeMix);`);
+      };
+      mat.customProgramCacheKey = () => 'wridge';
       const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
       mesh.renderOrder = -60;
@@ -656,6 +676,7 @@ export function createScene(scene, ctx) {
     windUniforms.uTime.value = time;
     // one wind for the shore, and the settle is most of what it is made of
     windUniforms.uWind.value = curves.wind(s) * (0.45 + 0.55 * gust);
+    ridgeUniforms.uRidgeMix.value = curves.ridgeHaze(s);
   }
 
   return { update, getGroundHeight: groundHeight, constrainPosition, anchors };

@@ -166,7 +166,6 @@ function detectMood() {
 
 const moodName = detectMood();
 const mood = resolveMood(moodName);
-document.documentElement.dataset.mode = moodName;
 
 let renderer;
 try {

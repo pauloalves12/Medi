@@ -80,6 +80,13 @@ function eq(name, got, want) {
   eq('mist · sharp(0)', +c.mist.sharp(0).toFixed(6), 0.34);
   eq('wind(0) / fog(0)', `${c.wind(0)},${c.fog(0)}`, '1,0.0072');
   eq('motes(0)', +c.motes(0).toFixed(6), 0.09);
+  // scene.js now mixes the ridges toward a haze colour. mix(col, haze, 0.0) is
+  // exactly col, so the moonlit skyline is untouched — as long as this is zero
+  // at every settle, which is the only thing keeping it that way.
+  ok('the night skyline never washes into haze', (() => {
+    for (let i = 0; i <= 40; i++) if (c.ridgeHaze(i / 40) !== 0) return false;
+    return true;
+  })());
 
   eq('grade · vignette(0)', +c.grade.vignette(0).toFixed(6), 0.34);
   eq('grade · bloom(0)', +c.grade.bloom(0).toFixed(6), 0.22);
@@ -184,7 +191,7 @@ function eq(name, got, want) {
         const v = c.water[k](s);
         if (!Number.isFinite(v) || v < 0) { finite = false; bad = `water.${k}(${s})=${v}`; }
       }
-      for (const k of ['wind', 'fog', 'motes']) {
+      for (const k of ['wind', 'fog', 'motes', 'ridgeHaze']) {
         const v = c[k](s);
         if (!Number.isFinite(v) || v < 0) { finite = false; bad = `${k}(${s})=${v}`; }
       }
@@ -303,6 +310,9 @@ function eq(name, got, want) {
   ok('the day blooms a third as hard', d.curves.grade.bloom(1) < n.curves.grade.bloom(1) * 0.5);
   ok('and vignettes less', d.curves.grade.vignette(0) < n.curves.grade.vignette(0));
   ok('the day hangs far less fog than the night', d.curves.fog(0) < n.curves.fog(0) * 0.6);
+  ok('and its skyline comes back out of the haze as the water settles',
+    d.curves.ridgeHaze(0) > 0.25 && d.curves.ridgeHaze(1) < 0.08
+    && d.curves.ridgeHaze(1) < d.curves.ridgeHaze(0));
   ok('the sun path on the water is held right down', d.curves.water.pathI(1) < n.curves.water.pathI(1) * 0.25);
   ok('the day albedo is lifted off the moonlit one',
     d.palette.rock > n.palette.rock && d.palette.pine > n.palette.pine

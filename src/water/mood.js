@@ -262,6 +262,9 @@ const MOONLIT_CURVES = {
 
   wind: (s) => 1 - 0.82 * s,
   fog: (s) => 0.0072 - 0.0034 * s,
+  // The night air does not visibly open: the ridge colours in RIDGES are the
+  // finished answer, and this must stay zero or the moonlit skyline moves.
+  ridgeHaze: () => 0,
   // Barely there on purpose. Anything you can count is not atmosphere.
   motes: (s) => 0.09 + 0.15 * s,
 
@@ -485,9 +488,14 @@ const DAY_PALETTE = {
   // the water itself absorbs the warm end out of whatever goes into it. The
   // shelf near the shore keeps more of the green, the open middle keeps less
   // of anything.
-  deep: 0x11303f,
-  shallow: 0x25545c,
-  haze: 0x8fa8bd,        // what distance dissolves everything into
+  // Water is never brighter than the sky it is reflecting, and a lake that is
+  // reads as a swimming pool. These are darker than the swatch instinct wants
+  // by some way, and they have to be: the Fresnel term hands the far half of
+  // the frame over to the reflection anyway, and everything the body colour
+  // adds on top of that is a lake glowing from the inside.
+  deep: 0x0e2836,
+  shallow: 0x1e454e,
+  haze: 0xa8c0d4,        // what distance dissolves everything into
 
   fogA: 0x93aec6,
   mist: 0xbdd0e0,        // the low bands lying on the lake
@@ -503,7 +511,11 @@ const DAY_PALETTE = {
   // what the whole near half of the frame is made of. Kept apart in hue as
   // well as in value — two warm greys a shade apart give a slope with nothing
   // on it, and this ground has no texture map to save it.
-  rock: 0x74777a,          // cool granite, and nowhere near chalk
+  // Held down harder than the swatch wants. The shore rocks and the sitting
+  // stone are one flat instanced material with no mottling on them — the
+  // terrain gets that and they do not — so at any value that reads as "lit
+  // granite" they print as pale cardboard wedges in the near field.
+  rock: 0x63666a,          // cool granite, and nowhere near chalk
   soil: 0x53553a,          // olive earth with something growing in it
   pine: 0x33533f,          // by day a pine is dark blue-green, not a silhouette
   grass: 0x5c7440,
@@ -517,10 +529,10 @@ const DAY_PALETTE = {
  *  haze. Distance is carried by value and by how little contrast is left, not
  *  by darkness — darkness is only what night does. */
 const DAY_RIDGES = [
-  { foot: 0x39516a, top: 0x7c93ab, haze: 0x90a7bd },
-  { foot: 0x52697f, top: 0x92a8bd, haze: 0xa5bacc },
-  { foot: 0x6c8296, top: 0xaabdd0, haze: 0xbaccdb },
-  { foot: 0x8899aa, top: 0xc2d1de, haze: 0xd0dbe7 },
+  { foot: 0x4a6784, top: 0x6d89a4, haze: 0x8099b0 },
+  { foot: 0x63809a, top: 0x8ba1b6, haze: 0x9db2c5 },
+  { foot: 0x7d94aa, top: 0xa5b9cb, haze: 0xb5c7d7 },
+  { foot: 0x93a6b8, top: 0xbfcedb, haze: 0xcbd8e4 },
 ];
 
 const DAY_CURVES = {
@@ -559,7 +571,7 @@ const DAY_CURVES = {
     discSize: (s) => 0.00020 * (1 + 2.0 * (1 - s)),
     // Morning haze on the far water, thinner than the night's mist and opening
     // further: the far shore coming back is most of what the settle buys here.
-    fog: (s) => 0.0052 - 0.0034 * s,
+    fog: (s) => 0.0042 - 0.0032 * s,
     // Held a little under the night's. Water hands back less than it is given
     // whatever the hour, but under a bright sky the difference between 0.88
     // and 0.82 is the difference between a lake and a mirror tile.
@@ -570,7 +582,7 @@ const DAY_CURVES = {
     // the sun's own white, as the night's runs through the moon's, it lifts
     // every channel equally and the whole lake turns to milk. This is the one
     // number that decides whether the foreground is water or paint.
-    scatter: 0.085,
+    scatter: 0.040,
     scatterCol: 0x2f8f7a,
   },
 
@@ -587,6 +599,14 @@ const DAY_CURVES = {
   // a far shore only darkens one; morning haze is nearly white, so the same
   // density does not veil the far shore, it erases it.
   fog: (s) => 0.0031 - 0.0017 * s,
+  // The skyline dissolving into the air in front of it, and coming back. This
+  // is the one lever that makes the mountains themselves answer the stillness:
+  // scene fog cannot reach them (they are drawn without it, at 340 to 1950 m,
+  // where any density that touched them would erase them), and the reflection's
+  // copy of them is baked. At the arrival they are more than a third of the way
+  // into the haze and read as weather; by the end they are nearly all the way
+  // back, and the frame has a mountain in it.
+  ridgeHaze: (s) => 0.40 - 0.36 * s,
   // Dust and pollen in a morning sunbeam. Fainter than the night's motes,
   // because by day there is a whole sky to compete with.
   motes: (s) => 0.05 + 0.09 * s,
@@ -749,10 +769,10 @@ const DAY = {
      * most of the frame from the moment you reach the shore.
      */
     float swCloudField(sampler2D nz, vec2 p, float t) {
-      float a = texture2D(nz, p * 0.00042 + vec2( t * 0.00120,  t * 0.00062)).r;
-      float b = texture2D(nz, p * 0.00113 + vec2(-t * 0.00082,  t * 0.00151)).g;
-      float c = texture2D(nz, p * 0.00287 + vec2( t * 0.00190, -t * 0.00104)).b;
-      return a * 0.60 + b * 0.28 + c * 0.16;
+      float a = texture2D(nz, p * 0.00016 + vec2( t * 0.00046,  t * 0.00024)).r;
+      float b = texture2D(nz, p * 0.00047 + vec2(-t * 0.00031,  t * 0.00058)).g;
+      float c = texture2D(nz, p * 0.00128 + vec2( t * 0.00074, -t * 0.00040)).b;
+      return a * 0.62 + b * 0.26 + c * 0.16;
     }
 
     /**
@@ -800,8 +820,8 @@ const DAY = {
 
         // Coverage. Softening the edge is what detailSoft does: a cloud seen
         // in broken water has no edge left, only a bright place.
-        float edge = 0.13 + detailSoft * 0.30;
-        float cover = 0.545 + detailSoft * 0.045;
+        float edge = 0.115 + detailSoft * 0.30;
+        float cover = 0.565 + detailSoft * 0.045;
         float thick = smoothstep(cover, cover + edge, n);
 
         // Lit from above and from the sun's side; the thin parts stay bright
