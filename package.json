@@ -1,0 +1,19 @@
+{
+  "name": "hand-pain-atlas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interaktiver 3D-Handschmerz-Atlas mit Webcam-Gestensteuerung (DE/EN)",
+  "scripts": {
+    "check": "esbuild src/HandPainAtlas.jsx --loader:.jsx=jsx --bundle --external:react --outfile=/dev/null",
+    "build": "node scripts/build.mjs",
+    "test": "node tests/smoke.mjs"
+  },
+  "devDependencies": {
+    "@mediapipe/hands": "^0.4.1675469240",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.56.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.128.0"
+  }
+}
