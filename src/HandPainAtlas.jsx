@@ -55,6 +55,9 @@ const TUNING = {
   dwellCooldownMs: 1400,    // Pause nach einer Auswahl
   pointerMaxDist: 0.16,     // Zeigefinger ↔ Fingersegment, relativ zur Handflächenlänge im Bild
   wristBand: 0.34,          // halbe Breite des Handgelenk-Korridors (relativ)
+  imgFingers: 0.9,          // Fingerwinkel: Anteil aus den Bildlandmarken (Rest aus den 3D-Weltlandmarken)
+  imgZScale: 1.3,           // Tiefe der Bildlandmarken ist gegenüber x/y gestaucht → so viel strecken
+  dipCouple: 0.45,          // Endgelenk beugt mindestens so viel mal das Mittelgelenk mit (Sehnenkopplung)
   contactOn: 0.34,          // Daumen- zu Fingerkuppe / Handflächenlänge: Kontakt-Korrektur beginnt
   contactFull: 0.18,        // … wirkt voll
   // Seitenerkennung (links/rechts): Stimmen mit Vergessen und Hysterese.
@@ -2294,6 +2297,28 @@ class HandEngine {
     const t = [clamp(sa(bA, cV, Xt), -20 * DEG, 75 * DEG), clamp(sa(cV, eV, Xt), -25 * DEG, 90 * DEG)];
     return { q, pose: { w: [0, 0], tq, t, f }, facing: palmar[2] > 0 ? 'palm' : 'back', palmar };
   }
+  // Fingerwinkel aus den Bildlandmarken: x/y sind dort genau gemessen. Die 3D-Weltlandmarken schätzt MediaPipe
+  // mit einem Handmodell im Hintergrund – sie ziehen jede Hand zur leicht gebeugten Ruhehand
+  // (flache Hand im Referenzvideo: Ø 13° Beugung aus den Weltlandmarken, Ø 4° aus dem Bild).
+  imageFingers(lm, wl, aspect) {
+    const zs = aspect * TUNING.imgZScale;
+    const pts = lm.map((q) => ({ x: (q.x - lm[0].x) * aspect, y: q.y - lm[0].y, z: (q.z - lm[0].z) * zs }));
+    // Tiefenrichtung an die (bereits korrigierten) Weltlandmarken angleichen
+    let c = 0; for (let i = 1; i < pts.length; i++) c += pts[i].z * (wl[i].z - wl[0].z);
+    if (c < 0) for (const q of pts) q.z = -q.z;
+    return this.poseFromLandmarks(pts).pose.f;
+  }
+  mergeImageFingers(f, fi) {
+    for (let k = 0; k < 4; k++) {
+      // Bildtiefe versagt (Mittelgelenk überstreckt, Weltlandmarken klar gebeugt) → bei den Weltwerten bleiben
+      if (fi[k][2] < -5 * DEG && f[k][2] > 30 * DEG) continue;
+      for (let j = 0; j < 4; j++) f[k][j] += (fi[k][j] - f[k][j]) * TUNING.imgFingers;
+      // die kurzen Endglieder sind in der Bildtiefe am unsichersten; aktiv beugt das Endgelenk mit dem Mittelgelenk mit
+      f[k][3] = Math.max(f[k][3], TUNING.dipCouple * f[k][2]);
+    }
+    return f;
+  }
+  get tuning() { return TUNING; }
   // Berühren sich Daumen und eine Fingerkuppe an der echten Hand, den Modell-Daumen per IK dorthin führen
   applyContact(pose, wl) {
     const d = (a, b) => Math.hypot(wl[a].x - wl[b].x, wl[a].y - wl[b].y, wl[a].z - wl[b].z);
@@ -2456,6 +2481,7 @@ class HandEngine {
       // (rechte Handfläche ≈ linker Handrücken im 2D-Bild) → Tiefe zurückspiegeln, statt das Modell umklappen zu lassen.
       const wl = P.label && P.label !== this.side ? P.wl.map((q) => ({ x: q.x, y: q.y, z: -q.z })) : P.wl;
       const r = this.poseFromLandmarks(wl, undefined, P.lm, aspect);
+      if (TUNING.imgFingers > 0) this.mergeImageFingers(r.pose.f, this.imageFingers(P.lm, wl, aspect));
       const fresh = !this.trk.pose || !this.trk.seen || now - this.trk.lastT > TUNING.lostGraceMs;
       if (fresh) this.trk.flt = null;
       const F = this.trk.flt || (this.trk.flt = {

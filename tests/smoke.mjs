@@ -191,6 +191,34 @@ const depthFlip = await page.evaluate(() => {
 });
 ok(depthFlip.rot < 3 && depthFlip.fe < 3 && depthFlip.a === depthFlip.b, `Tiefengespiegeltes Bild wird korrigiert (Abweichung ${depthFlip.rot.toFixed(1)}°, Finger ${depthFlip.fe.toFixed(1)}°, Seite ${depthFlip.a}/${depthFlip.b})`);
 
+// Flache Hand: Weltlandmarken mit Ruhehand-Beugung (wie MediaPipe sie liefert), Bildlandmarken flach → Modell flach;
+// Faust bleibt Faust
+const flatHand = await page.evaluate(() => {
+  const E = window.__handAtlas; const THREE = window.THREE; const D = 180 / Math.PI; const A = 4 / 3;
+  const saveSide = E.side; E.setSide('R'); E.setMirrorView(true);
+  const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.15, 0.2, 0.05));
+  const side = E.displaySide(), zs = E.tuning.imgZScale;
+  const toLm = (w) => w.map((p) => ({ x: 0.5 + (p.x * 2.2) / A, y: 0.4 + p.y * 2.2, z: (p.z * 2.2) / A / zs }));
+  const pose = (fn) => { const P = E.clonePose(E.poseCache.open); P.f.forEach((f, k) => fn(f, k)); return P; };
+  const run = (Pimg, Pworld) => {
+    E.resetTracking();
+    const wl = E.synthLandmarks(Pworld, q0, side);
+    E.ingestHands({ multiHandLandmarks: [toLm(E.synthLandmarks(Pimg, q0, side))], multiHandWorldLandmarks: [wl], multiHandedness: [{ label: 'Right', score: 0.95 }] }, { mode: 'mirror', swap: false, aspect: A });
+    return E.trk.pose.f;
+  };
+  const flat = pose((f) => { f[0] = 0; f[2] = 0; f[3] = 0; });
+  const rest = pose((f) => { f[0] = 12 / D; f[2] = 22 / D; f[3] = 25 / D; });
+  const maxFlex = (F) => Math.max(...F.flatMap((f) => [f[0], f[2], f[3]])) * D;
+  const flatOut = maxFlex(run(flat, rest));
+  const fist = E.poseCache.fist;
+  const fo = run(fist, fist);
+  let fistErr = 0; for (let k = 0; k < 4; k++) for (const j of [0, 2, 3]) fistErr = Math.max(fistErr, Math.abs(fo[k][j] - fist.f[k][j]) * D);
+  E.setMirrorView(false); E.setSide(saveSide); E.resetTracking();
+  return { flatOut, fistErr };
+});
+ok(flatHand.flatOut < 5, `Flache Hand bleibt flach, obwohl die 3D-Landmarken 25° Beugung zeigen (max. ${flatHand.flatOut.toFixed(1)}°)`);
+ok(flatHand.fistErr < 3, `Faust bleibt Faust (Abweichung max. ${flatHand.fistErr.toFixed(1)}°)`);
+
 // Kontakt-Korrektur: Daumenwinkel absichtlich verfälscht, Kuppen berühren sich in den Landmarken → Modell schliesst den Griff
 const contact = await page.evaluate(() => {
   const E = window.__handAtlas; const THREE = window.THREE;
