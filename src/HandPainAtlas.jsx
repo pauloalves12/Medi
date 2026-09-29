@@ -71,6 +71,8 @@ const TUNING = {
   exerciseHold: 1.7,        // Sekunden pro Übungsschritt (Halten)
   exerciseMove: 1.0,        // Sekunden pro Übergang
   camDist: 48, camMin: 20, camMax: 95,
+  armCut: -12.6,            // Höhe des Unterarm-Schnitts im Rig (cm, 0 ≈ Handgelenk +2.6)
+  armCutRound: 0.45,        // Rundung der Hautkante am Schnitt (cm)
 };
 
 const CDN = {
@@ -1281,7 +1283,7 @@ float haNoise(vec3 x){ vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 
              mix(mix(haHash(i + vec3(0,0,1)), haHash(i + vec3(1,0,1)), f.x), mix(haHash(i + vec3(0,1,1)), haHash(i + vec3(1,1,1)), f.x), f.y), f.z); }
 float haFbm(vec3 p){ return 0.62 * haNoise(p) + 0.38 * haNoise(p * 2.9 + 3.1); }
 `;
-// Globale Uniforms (Zeit, Farben, Ausblendbereich des Unterarms)
+// Globale Uniforms (Zeit, Farben, Schnittebene des Unterarms)
 let GU = null;
 function initGU() {
   GU = {
@@ -1289,34 +1291,41 @@ function initGU() {
     edge: { value: new THREE.Color(MATC.edge).convertSRGBToLinear() },
     hiCol: { value: new THREE.Color(MATC.hi).convertSRGBToLinear() },
     ghostCol: { value: new THREE.Color(MATC.skinGhost).convertSRGBToLinear() },
-    fadeA: { value: -13.2 }, fadeB: { value: -8.8 },
+    cutY: { value: TUNING.armCut },
+    capN: { value: new THREE.Vector3(0, -1, 0) },   // Normale der Schnittfläche in Kamera-Koordinaten
   };
 }
 // kind: 0 glatt, 1 Muskel (Fasern), 2 Sehne (feine Längsstreifen)
 // mode: null (Standard, wird abgetragen), 'skin' (Farb-Pass der Haut), 'depth' (Tiefen-Vorpass der Haut)
-function patchMat(mat, U, kind, mode) {
+// cap: Objekt reicht über den Unterarm-Schnitt → Rückseiten werden als massive Schnittfläche gezeichnet
+function patchMat(mat, U, kind, mode, cap) {
   const skin = mode === 'skin', depth = mode === 'depth', peelable = !skin && !depth;
-  mat.customProgramCacheKey = () => 'ha' + kind + (mode || '');
+  if (cap) mat.side = THREE.DoubleSide;
+  mat.customProgramCacheKey = () => 'ha' + kind + (mode || '') + (cap ? 'c' : '');
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uPeel = U.peel; sh.uniforms.uHi = U.hi; sh.uniforms.uTime = GU.time;
-    sh.uniforms.uEdge = GU.edge; sh.uniforms.uHiCol = GU.hiCol; sh.uniforms.uFadeA = GU.fadeA; sh.uniforms.uFadeB = GU.fadeB;
+    sh.uniforms.uEdge = GU.edge; sh.uniforms.uHiCol = GU.hiCol; sh.uniforms.uCutY = GU.cutY; sh.uniforms.uCapN = GU.capN;
     if (skin) { sh.uniforms.uSkinA = U.skinA; sh.uniforms.uGhost = U.ghost; sh.uniforms.uGhostCol = GU.ghostCol; }
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vHaObj;\nvarying vec2 vHaUv;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHaObj = position;\nvHaUv = uv;');
     let frag = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vHaObj;\nvarying vec2 vHaUv;\nuniform float uPeel;\nuniform float uHi;\nuniform float uTime;\nuniform float uFadeA;\nuniform float uFadeB;\nuniform vec3 uEdge;\nuniform vec3 uHiCol;\n'
+      .replace('#include <common>', '#include <common>\nvarying vec3 vHaObj;\nvarying vec2 vHaUv;\nuniform float uPeel;\nuniform float uHi;\nuniform float uTime;\nuniform float uCutY;\nuniform vec3 uCapN;\nuniform vec3 uEdge;\nuniform vec3 uHiCol;\n'
         + (skin ? 'uniform float uSkinA;\nuniform float uGhost;\nuniform vec3 uGhostCol;\n' : '') + GLSL_NOISE)
       .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
         float haN = haFbm(vHaObj * 1.3);
-        float haFade = smoothstep(uFadeA, uFadeB, vHaObj.y);
-        if (haN * 0.96 + 0.02 > haFade) discard;
+        ${peelable ? 'if (vHaObj.y < uCutY) discard;' : ''}
         float haThr = uPeel * 1.12 - 0.06;
         ${peelable ? 'if (haN < haThr) discard;' : ''}
+        ${cap ? 'if (!gl_FrontFacing && uPeel > 0.001) discard;' : ''}
         float haEdge = ${peelable ? '(uPeel > 0.001) ? (1.0 - smoothstep(0.0, 0.07, haN - haThr)) : 0.0' : '0.0'};
       `);
     if (kind === 1) frag = frag.replace('#include <color_fragment>', '#include <color_fragment>\n diffuseColor.rgb *= 0.8 + 0.2 * (0.5 + 0.5 * sin(vHaUv.x * 6.2831 * 24.0 + haN * 3.0));\n diffuseColor.rgb *= 0.9 + 0.1 * smoothstep(0.1, 0.5, abs(vHaUv.y - 0.5));');
     if (kind === 2) frag = frag.replace('#include <color_fragment>', '#include <color_fragment>\n diffuseColor.rgb *= 0.92 + 0.08 * (0.5 + 0.5 * sin(vHaUv.x * 6.2831 * 12.0));');
+    if (cap) {
+      frag = frag.replace('#include <color_fragment>', '#include <color_fragment>\n if (!gl_FrontFacing) diffuseColor.rgb *= 0.78;')
+        .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n if (!gl_FrontFacing) normal = normalize(uCapN);');
+    }
     if (!depth) frag = frag.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += uEdge * haEdge * 1.8 + uHiCol * uHi * (0.5 + 0.35 * sin(uTime * 4.0));');
     if (skin) {
       frag = frag.replace('#include <tonemapping_fragment>', `
@@ -1678,7 +1687,7 @@ class HandEngine {
   }
 
   // ───── Materialien ─────
-  makeMaterial(key, layer) {
+  makeMaterial(key, layer, cap) {
     const U = { peel: this.layerU[LAYER_IX[layer]].peel, hi: { value: 0 } };
     let m, kind = 0;
     const S = (o) => new THREE.MeshStandardMaterial({ metalness: 0, ...o });
@@ -1698,11 +1707,11 @@ class HandEngine {
       default: m = S({ color: 0xffffff });
     }
     m.color.convertSRGBToLinear(); m.emissive.convertSRGBToLinear();
-    patchMat(m, U, kind, null);
+    patchMat(m, U, kind, null, cap);
     return { m, U };
   }
   addMesh(geo, key, parent, layer, structs, finger, extra = {}) {
-    const { m, U } = this.makeMaterial(key, layer);
+    const { m, U } = this.makeMaterial(key, layer, !!extra.cap);
     const mesh = new THREE.Mesh(geo, m);
     if (extra.pos) mesh.position.set(...extra.pos);
     if (extra.rotZ) mesh.rotation.z = extra.rotZ;
@@ -1745,9 +1754,9 @@ class HandEngine {
       this.addMesh(blobGeo(sz, i * 1.7 + 0.3), 'bone', N.wr, 'bones', structs, null, { pos: vsub(p, w), rotZ: rz * DEG });
     });
     const rad = [[-16, 0.0001], [-15.9, 0.6], [-9, 0.62], [-6, 0.8], [-4, 1.05], [-3.2, 1.4], [-2.86, 1.58], [-2.66, 1.5], [-2.58, 0.9], [-2.56, 0.0001]];
-    this.addMesh(latheRig(rad, 0.8, 0.62, -2.72), 'bone', this.rigRoot, 'bones', ['radius'], null);
+    this.addMesh(latheRig(rad, 0.8, 0.62, -2.72), 'bone', this.rigRoot, 'bones', ['radius'], null, { cap: true });
     const uln = [[-16, 0.0001], [-15.9, 0.5], [-8, 0.5], [-5, 0.52], [-3.6, 0.62], [-3.0, 0.68], [-2.84, 0.6], [-2.75, 0.35], [-2.72, 0.0001]];
-    this.addMesh(latheRig(uln, -1.75, 0.9, -2.9), 'bone', this.rigRoot, 'bones', ['ulna'], null);
+    this.addMesh(latheRig(uln, -1.75, 0.9, -2.9), 'bone', this.rigRoot, 'bones', ['ulna'], null, { cap: true });
     this.addMesh(blobGeo([0.32, 0.42, 0.3], 7), 'bone', this.rigRoot, 'bones', ['radius'], null, { pos: [2.22, -2.55, 0] });
     this.addMesh(blobGeo([0.22, 0.35, 0.18], 8), 'bone', this.rigRoot, 'bones', ['radius'], null, { pos: [0.75, -3.1, -0.95] });
     this.addMesh(blobGeo([0.18, 0.34, 0.18], 9), 'bone', this.rigRoot, 'bones', ['ulna'], null, { pos: [-2.2, -2.62, -0.35] });
@@ -1792,15 +1801,14 @@ class HandEngine {
       const dp = groupEval(palm, 0.9, x, y, z);
       let df = 1e9;
       for (let i = 0; i < fingers.length; i++) { const g = groupEval(fingers[i], 0.3, x, y, z); if (g < df) df = g; }
-      if (df > 5e8) return dp;
-      if (dp > 5e8) return df;
-      return smin(dp, df, 0.6);
+      const d = df > 5e8 ? dp : dp > 5e8 ? df : smin(dp, df, 0.6);
+      return -smin(-d, -(TUNING.armCut - y), TUNING.armCutRound);   // sanfter Schnitt: max(d, cut − y)
     };
   }
   async buildSkin(onProgress) {
     const sdf = this.sdf = this.skinSDF();
     const h = TUNING.skinVoxel;
-    const { pos, idx } = await surfaceNets(sdf, [-5.8, -16.4, -3.6], [9.8, 17.6, 5.8], h, onProgress);
+    const { pos, idx } = await surfaceNets(sdf, [-5.8, TUNING.armCut - 0.8, -3.6], [9.8, 17.6, 5.8], h, onProgress);
     onProgress?.(0.65);
     const nv = pos.length / 3;
     const P = new Float32Array(pos.length), Nn = new Float32Array(pos.length);
@@ -1894,7 +1902,8 @@ class HandEngine {
         const ax = axRig.clone().transformDirection(this.restInv[p.n]);
         return { n: p.n, loc, ax };
       });
-      const e = this.addMesh(tg.geo, def.m, space === 'wr' ? this.N.wr : this.rigRoot, def.l, [def.s], def.f);
+      const crossesCut = def.pts.some((q) => q.sp === 'rig' && q.p[1] < TUNING.armCut + 0.3);
+      const e = this.addMesh(tg.geo, def.m, space === 'wr' ? this.N.wr : this.rigRoot, def.l, [def.s], def.f, { cap: crossesCut });
       e.mesh.frustumCulled = false;
       const t = { def, tg, anchors, dynamic: !(allFa || allWr), space, pts: anchors.map(() => [0, 0, 0]), axs: anchors.map(() => [0, 0, 0]), entry: e, stale: false };
       e.tube = t;
@@ -2482,6 +2491,8 @@ class HandEngine {
       e.U.hi.value = e.hiCur;
     }
     this.scene.updateMatrixWorld();
+    this.camera.updateMatrixWorld();
+    GU.capN.value.set(0, -1, 0).transformDirection(this.rigRoot.matrixWorld).transformDirection(this.camera.matrixWorldInverse);
     this.renderer.render(this.scene, this.camera);
     this.updateOverlay();
   }
