@@ -57,11 +57,17 @@ const TUNING = {
   wristBand: 0.34,          // halbe Breite des Handgelenk-Korridors (relativ)
   contactOn: 0.34,          // Daumen- zu Fingerkuppe / Handflächenlänge: Kontakt-Korrektur beginnt
   contactFull: 0.18,        // … wirkt voll
+  sideVoteGain: 0.1,        // Seitenerkennung: Gewicht einer Stimme (mal Sicherheit der Erkennung)
+  sideVoteDecay: 0.96,      // … Vergessen pro Bild
+  sideVoteSwitch: 0.8,      // … Schwelle für einen Seitenwechsel (Hysterese)
   pinchOn: 0.28,            // Daumen-Zeigefinger-Abstand / Handgrösse: Pinch beginnt
   pinchOff: 0.42,           // … endet (Hysterese)
   peelDragGain: 7,          // Schichten pro Bildhöhe beim Pinch-Ziehen
-  angleSmoothing: 0.45,     // 0..1 – Anteil neuer Messung pro Frame (Gelenkwinkel)
-  rotSmoothing: 0.32,       // 0..1 – Anteil neuer Messung pro Frame (Handorientierung)
+  // One-Euro-Filter: in Ruhe stark geglättet (kein Zittern), bei schneller Bewegung kaum Verzögerung
+  euroMinCut: 1.3,          // Grenzfrequenz in Ruhe (Hz) – Gelenkwinkel
+  euroBeta: 0.4,            // wie stark Tempo die Glättung lockert – Gelenkwinkel
+  euroRotMinCut: 1.1,       // … Handorientierung
+  euroRotBeta: 0.7,
   airGain: 1.45,            // Luft-Cursor: Verstärkung um die Bildmitte
   airSmoothing: 0.35,
   lostGraceMs: 700,         // Hand kurz verloren → Pose halten
@@ -1553,6 +1559,30 @@ function palmFrame(P, s) {
   return { radial, distal, palmar };
 }
 
+// One-Euro-Filter (Casiez et al.): adaptive Glättung für verrauschte Echtzeit-Signale
+class OneEuro {
+  constructor(minCut, beta, dCut = 1.0) { this.minCut = minCut; this.beta = beta; this.dCut = dCut; this.x = null; this.dx = 0; this.t = 0; }
+  static alpha(cut, dt) { const tau = 1 / (2 * Math.PI * cut); return 1 / (1 + tau / dt); }
+  filter(x, t) {
+    if (this.x === null) { this.x = x; this.t = t; return x; }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    this.dx += OneEuro.alpha(this.dCut, dt) * ((x - this.x) / dt - this.dx);
+    this.x += OneEuro.alpha(this.minCut + this.beta * Math.abs(this.dx), dt) * (x - this.x);
+    return this.x;
+  }
+}
+class QuatEuro {
+  constructor(minCut, beta, dCut = 1.0) { this.minCut = minCut; this.beta = beta; this.dCut = dCut; this.q = null; this.w = 0; this.t = 0; }
+  filter(q, t) {
+    if (!this.q) { this.q = q.clone(); this.t = t; return this.q; }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    const ang = 2 * Math.acos(Math.min(1, Math.abs(this.q.dot(q))));
+    this.w += OneEuro.alpha(this.dCut, dt) * (ang / dt - this.w);
+    this.q.slerp(q, OneEuro.alpha(this.minCut + this.beta * this.w, dt));
+    return this.q;
+  }
+}
+
 // ═══════════════════════════════ Engine ═══════════════════════════════
 const SPOT_SVG = '<svg viewBox="-13 -13 26 26" width="26" height="26" aria-hidden="true"><circle class="ha-ring" r="8.6"/><circle class="ha-dot" r="1.7"/><path class="ha-x" d="M-3.6 -3.6L3.6 3.6M3.6 -3.6L-3.6 3.6"/></svg>';
 const RING_SVG = '<svg viewBox="-20 -20 40 40" width="40" height="40" aria-hidden="true"><circle class="ha-cr-bg" r="15"/><circle class="ha-cr-fg" r="15" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90)"/><circle class="ha-cr-dot" r="4"/></svg>';
@@ -2191,12 +2221,24 @@ class HandEngine {
   }
   // modelSide = angezeigte Modellseite. Spiegelbild-Koordinaten: x wie Vorschau, y nach oben,
   // z zur Kamera hin (= zum Betrachter). Die Geometrie ist dadurch seitenverkehrt → Modellseite gespiegelt.
-  poseFromLandmarks(wl, modelSide) {
+  // lm/aspect (optional): 2D-Bildpunkte. MediaPipe richtet die Hand für die 3D-Weltpunkte intern auf;
+  // die Neigung in der Bildebene ist in den 2D-Punkten exakt → damit wird die Drehung um die Blickachse korrigiert.
+  poseFromLandmarks(wl, modelSide, lm, aspect = 4 / 3) {
     const s = (modelSide || this.displaySide()) === 'L' ? -1 : 1;
     const p = wl.map((q) => [q.x, -q.y, -q.z]);
     const { radial, distal, palmar } = palmFrame([p[0], p[5], p[9], p[13], p[17]], s);
     const c0 = vmul(radial, s), c1 = distal, c2 = vcross(c0, c1);
     const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3(...c0), new THREE.Vector3(...c1), new THREE.Vector3(...c2)));
+    if (lm) {
+      const dx = (lm[9].x - lm[0].x) * aspect, dy = -(lm[9].y - lm[0].y);
+      const pl = Math.hypot(distal[0], distal[1]);
+      const w = clamp((pl - 0.25) / 0.35, 0, 1) * clamp(Math.hypot(dx, dy) / 0.04, 0, 1);
+      if (w > 0) {
+        let dAng = Math.atan2(-dx, dy) - Math.atan2(-distal[0], distal[1]);
+        while (dAng > Math.PI) dAng -= 2 * Math.PI; while (dAng < -Math.PI) dAng += 2 * Math.PI;
+        q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), dAng * w));
+      }
+    }
     q.multiply(s > 0 ? this.lfCorr.R : this.lfCorr.L);
     const tv = new THREE.Vector3();
     const L = p.map((v) => { const d = vsub(v, p[0]); return tv.set(vdot(d, radial), vdot(d, distal), vdot(d, palmar)).applyQuaternion(this.lfQ).toArray(); });
@@ -2350,7 +2392,7 @@ class HandEngine {
   ingestHands(res, opt) {
     const now = performance.now();
     const LM = res.multiHandLandmarks || [], WL = res.multiHandWorldLandmarks || [], HD = res.multiHandedness || [];
-    const hands = LM.map((lm, i) => ({ lm, wl: WL[i] || null, label: this.labelOf(HD[i], opt.swap) }));
+    const hands = LM.map((lm, i) => ({ lm, wl: WL[i] || null, label: this.labelOf(HD[i], opt.swap), score: HD[i]?.score ?? 0.5 }));
     const out = { n: hands.length, puppet: -1, pointer: -1, dwell: 0, region: null, facing: null, side: this.side, cursor: null, peeling: false, pinch: false };
     const aspect = opt.aspect || 4 / 3;
     if (opt.mode === 'air') {
@@ -2374,27 +2416,44 @@ class HandEngine {
     }
     this.air = null; this.setHover(null, 'air');
     if (!hands.length) { this.ptr = null; this.setHover(null, 'ptr'); this.dwellStep(null, now); return out; }
+    // Welche Hand ist das Modell? MediaPipe-Labels flackern (dieselbe Hand mal «Left», mal «Right»).
+    // Darum zählt bei zwei Händen zuerst die Kontinuität (Handgelenk nahe am letzten Bild), erst dann das Label.
     let pi = 0;
     if (hands.length >= 2) {
-      const m = hands.map((h, i) => (h.label === this.side ? i : -1)).filter((i) => i >= 0);
-      if (m.length === 1) pi = m[0];
-      else if (this.trk.lastWrist) {
+      const recent = this.trk.lastWrist && now - (this.trk.lastWristT || 0) < 500;
+      if (recent) {
         const d = (h) => Math.hypot(h.lm[0].x - this.trk.lastWrist.x, h.lm[0].y - this.trk.lastWrist.y);
         pi = d(hands[0]) <= d(hands[1]) ? 0 : 1;
+      } else {
+        const m = hands.map((h, i) => (h.label === this.side ? i : -1)).filter((i) => i >= 0);
+        if (m.length === 1) pi = m[0];
       }
     }
     const P = hands[pi]; out.puppet = pi;
-    this.trk.lastWrist = { x: P.lm[0].x, y: P.lm[0].y };
-    if (hands.length === 1 && P.label && P.label !== this.side) {
-      if (this.trk.sideCand !== P.label) { this.trk.sideCand = P.label; this.trk.sideSince = now; }
-      else if (now - this.trk.sideSince > 650) { this.setSide(P.label); this.opts.onSide?.(P.label); this.trk.sideCand = null; }
-    } else this.trk.sideCand = null;
+    this.trk.lastWrist = { x: P.lm[0].x, y: P.lm[0].y }; this.trk.lastWristT = now;
+    // Seite nur bei eindeutiger, anhaltender Mehrheit wechseln (Stimmen mit Vergessen, Hysterese)
+    if (hands.length === 1 && P.label) {
+      const v = (this.trk.vote || 0) * TUNING.sideVoteDecay + (P.label === 'R' ? 1 : -1) * P.score * TUNING.sideVoteGain;
+      this.trk.vote = clamp(v, -1.5, 1.5);
+      const want = this.trk.vote > TUNING.sideVoteSwitch ? 'R' : this.trk.vote < -TUNING.sideVoteSwitch ? 'L' : null;
+      if (want && want !== this.side) { this.setSide(want); this.opts.onSide?.(want); }
+    }
     if (P.wl) {
-      const r = this.poseFromLandmarks(P.wl);
-      const a = TUNING.angleSmoothing;
+      const r = this.poseFromLandmarks(P.wl, undefined, P.lm, aspect);
       const fresh = !this.trk.pose || !this.trk.seen || now - this.trk.lastT > TUNING.lostGraceMs;
-      if (fresh) { this.trk.pose = this.clonePose(r.pose); this.trk.q = r.q.clone(); }
-      else { this.blendPose(this.trk.pose, r.pose, a); this.trk.q.slerp(r.q, TUNING.rotSmoothing); }
+      if (fresh) this.trk.flt = null;
+      const F = this.trk.flt || (this.trk.flt = {
+        v: Array.from({ length: 18 }, () => new OneEuro(TUNING.euroMinCut, TUNING.euroBeta)),
+        tq: new QuatEuro(TUNING.euroRotMinCut, TUNING.euroRotBeta),
+        q: new QuatEuro(TUNING.euroRotMinCut, TUNING.euroRotBeta),
+      });
+      const ts = now / 1000;
+      const out2 = this.clonePose(r.pose);
+      for (let k = 0; k < 4; k++) for (let j = 0; j < 4; j++) out2.f[k][j] = F.v[k * 4 + j].filter(r.pose.f[k][j], ts);
+      out2.t[0] = F.v[16].filter(r.pose.t[0], ts); out2.t[1] = F.v[17].filter(r.pose.t[1], ts);
+      out2.tq.copy(F.tq.filter(r.pose.tq, ts));
+      this.trk.pose = out2;
+      this.trk.q = F.q.filter(r.q, ts).clone();
       this.applyContact(this.trk.pose, P.wl);
       this.trk.seen = true; this.trk.lastT = now; this.trk.facing = r.facing;
       out.facing = r.facing;
@@ -2423,7 +2482,7 @@ class HandEngine {
     this.ptrDwell = out.dwell;
     return out;
   }
-  resetTracking() { this.trk.seen = false; this.trk.pose = null; this.ptr = null; this.air = null; this.peelDrag = null; this.pinch = {}; this.setHover(null, 'ptr'); this.setHover(null, 'air'); this.dwellStep(null, performance.now()); }
+  resetTracking() { this.trk.vote = 0; this.trk.flt = null; this.trk.seen = false; this.trk.pose = null; this.ptr = null; this.air = null; this.peelDrag = null; this.pinch = {}; this.setHover(null, 'ptr'); this.setHover(null, 'air'); this.dwellStep(null, performance.now()); }
   trackingActive(now) { return this.mode === 'mirror' && this.trk.seen && now - this.trk.lastT < TUNING.lostGraceMs; }
 
   // ───── Render-Schleife ─────
@@ -2563,7 +2622,7 @@ class HandTracker {
       await loadScript(CDN.hands + 'hands.js');
       if (!window.Hands) throw new Error('hands');
       const hands = this.hands = new window.Hands({ locateFile: (f) => CDN.hands + f });
-      hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5, selfieMode: true });
+      hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5, selfieMode: true });
       hands.onResults((r) => { if (!this.stopped) this.onResults(r); });
       if (hands.initialize) await hands.initialize();
     } catch (e) { const err = new Error('hands'); err.name = 'HandsLoadError'; throw err; }

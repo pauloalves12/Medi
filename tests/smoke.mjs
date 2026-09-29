@@ -136,6 +136,39 @@ const mirror = await page.evaluate(() => {
 });
 ok(mirror.mirrored === 'R' && mirror.scale === 1 && mirror.normal === 'L', `Spiegel-Modus zeigt die linke Hand als Spiegelbild (${JSON.stringify(mirror)})`);
 
+// Neigung in der Bildebene: aus den 2D-Punkten übernehmen (MediaPipe richtet die 3D-Punkte intern auf)
+const roll = await page.evaluate(() => {
+  const E = window.__handAtlas; const THREE = window.THREE; const D = 180 / Math.PI;
+  const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.25, 0.4, 0.15));
+  const wl = E.synthLandmarks(E.poseCache.relaxed, q0, 'R');
+  const asp = 4 / 3;
+  const lmOf = (a) => wl.map((p) => { const X = p.x * 2.2, Y = p.y * 2.2; return { x: 0.5 + (X * Math.cos(a) - Y * Math.sin(a)) / asp, y: 0.5 + (X * Math.sin(a) + Y * Math.cos(a)) }; });
+  const same = E.poseFromLandmarks(wl, 'R', lmOf(0), asp).q;
+  const rot = E.poseFromLandmarks(wl, 'R', lmOf(20 / D), asp).q;
+  const ang = (a, b) => 2 * Math.acos(Math.min(1, Math.abs(a.dot(b)))) * D;
+  const rel = rot.clone().multiply(same.clone().invert());
+  const axis = new THREE.Vector3(rel.x, rel.y, rel.z).normalize();
+  return { unchanged: ang(same, q0), rolled: ang(rot, same), axisZ: Math.abs(axis.z) };
+});
+ok(roll.unchanged < 0.5 && Math.abs(roll.rolled - 20) < 1 && roll.axisZ > 0.99, `Bildebenen-Neigung aus 2D übernommen (unverändert ${roll.unchanged.toFixed(2)}°, geneigt ${roll.rolled.toFixed(1)}° um Blickachse)`);
+
+// Seitenerkennung: flackernde Labels dürfen die Modellseite nicht umschalten
+const flicker = await page.evaluate(() => {
+  const E = window.__handAtlas; const THREE = window.THREE;
+  const wl = E.synthLandmarks(E.poseCache.open, new THREE.Quaternion(), 'R');
+  const lm = wl.map((p) => ({ x: 0.5 + p.x * 2.2, y: 0.5 + p.y * 2.2, z: 0 }));
+  const saveSide = E.side; E.setSide('R'); E.resetTracking();
+  const res = (label) => ({ multiHandLandmarks: [lm], multiHandWorldLandmarks: [wl], multiHandedness: [{ label, score: 0.9 }] });
+  const seq = []; for (let i = 0; i < 60; i++) seq.push(i % 10 < 7 ? 'Right' : 'Left');
+  let switched = false;
+  for (const l of seq) { E.ingestHands(res(l), { mode: 'mirror', swap: false, aspect: 4 / 3 }); if (E.side !== 'R') switched = true; }
+  let framesToSwitch = -1;
+  for (let i = 0; i < 40; i++) { E.ingestHands(res('Left'), { mode: 'mirror', swap: false, aspect: 4 / 3 }); if (E.side === 'L') { framesToSwitch = i + 1; break; } }
+  E.setSide(saveSide); E.resetTracking();
+  return { switched, framesToSwitch };
+});
+ok(!flicker.switched && flicker.framesToSwitch > 0 && flicker.framesToSwitch <= 30, `Seitenerkennung stabil bei Flackern, wechselt bei klarer Mehrheit nach ${flicker.framesToSwitch} Bildern`);
+
 // Kontakt-Korrektur: Daumenwinkel absichtlich verfälscht, Kuppen berühren sich in den Landmarken → Modell schliesst den Griff
 const contact = await page.evaluate(() => {
   const E = window.__handAtlas; const THREE = window.THREE;
