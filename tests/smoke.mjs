@@ -115,20 +115,54 @@ ok(Math.max(...ik) < 0.3, `Daumen erreicht die Fingerkuppen (max. ${Math.max(...
 const facing = await page.evaluate(() => {
   const E = window.__handAtlas; const THREE = window.THREE;
   const P = E.poseCache.open; const res = {};
-  // Modell-Handfläche zeigt zum Betrachter (Palmaransicht) = Handfläche von der Kamera weg (Nutzerblick)
+  // Spiegelbild: Modell-Handfläche zeigt zum Betrachter (Palmaransicht) = Handfläche zur Kamera
   for (const side of ['R', 'L']) {
     res[side + '_viewer'] = E.poseFromLandmarks(E.synthLandmarks(P, new THREE.Quaternion(), side), side).facing;
     res[side + '_flip'] = E.poseFromLandmarks(E.synthLandmarks(P, new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI, 0)), side), side).facing;
   }
   return res;
 });
-ok(facing.R_viewer === 'back' && facing.R_flip === 'palm' && facing.L_viewer === 'back' && facing.L_flip === 'palm', `Seitenerkennung Handfläche/Handrücken: ${JSON.stringify(facing)}`);
+ok(facing.R_viewer === 'palm' && facing.R_flip === 'back' && facing.L_viewer === 'palm' && facing.L_flip === 'back', `Seitenerkennung Handfläche/Handrücken (Spiegelbild): ${JSON.stringify(facing)}`);
+
+// Spiegelbild: linke Hand wird als rechtes Modell gezeigt, Handfläche zur Kamera → Modell zeigt Handfläche
+const mirror = await page.evaluate(() => {
+  const E = window.__handAtlas; const saveSide = E.side;
+  E.setSide('L'); E.setMirrorView(true);
+  const a = E.displaySide(), sx = E.handRoot.scale.x;
+  E.setMirrorView(false);
+  const b = E.displaySide();
+  E.setSide(saveSide);
+  return { mirrored: a, scale: sx, normal: b };
+});
+ok(mirror.mirrored === 'R' && mirror.scale === 1 && mirror.normal === 'L', `Spiegel-Modus zeigt die linke Hand als Spiegelbild (${JSON.stringify(mirror)})`);
+
+// Kontakt-Korrektur: Daumenwinkel absichtlich verfälscht, Kuppen berühren sich in den Landmarken → Modell schliesst den Griff
+const contact = await page.evaluate(() => {
+  const E = window.__handAtlas; const THREE = window.THREE;
+  const P = E.poseCache.pinch;
+  const wl = E.synthLandmarks(P, new THREE.Quaternion().setFromEuler(new THREE.Euler(0.3, 0.5, 0.1)), 'R');
+  const r = E.poseFromLandmarks(wl, 'R');
+  const bad = E.clonePose(r.pose);
+  bad.t[0] -= 25 * Math.PI / 180; bad.t[1] -= 20 * Math.PI / 180;
+  bad.tq.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.3, 0, 0.2)));
+  const gap = (pose) => {
+    E.applyPose(pose); for (const n of E.nodeNames) E.N[n].updateMatrix();
+    const L3 = 1.8, Lt2 = 2.4;
+    return E.rigPoint('tp2', 0, Lt2 * 0.72, 0.55, new THREE.Vector3()).distanceTo(E.rigPoint('p3_1', 0, L3 * 0.72, 0.6, new THREE.Vector3()));
+  };
+  const before = gap(bad);
+  const w = E.applyContact(bad, wl);
+  const after = gap(bad);
+  E.applyPose(E.cur); E.poseDirty = true;
+  return { before, after, w };
+});
+ok(contact.w > 0.99 && contact.after < 0.3 && contact.before > 1, `Pinzettengriff wird geschlossen (Abstand ${contact.before.toFixed(2)} → ${contact.after.toFixed(2)} cm)`);
 
 // Zeige-Abbildung: Zeigefinger der zweiten Hand auf Landmarken der Modellhand
 const ptr = await page.evaluate(() => {
   const E = window.__handAtlas; const THREE = window.THREE;
   const out = {};
-  for (const [name, rot] of [['palm', [0, Math.PI, 0]], ['back', [0, 0, 0]]]) {
+  for (const [name, rot] of [['palm', [0, 0, 0]], ['back', [0, Math.PI, 0]]]) {
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...rot));
     const wl = E.synthLandmarks(E.poseCache.open, q, 'R');
     const lm = wl.map((p) => ({ x: 0.5 + p.x * 2.2, y: 0.5 + p.y * 2.2 }));

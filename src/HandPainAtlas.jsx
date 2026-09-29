@@ -55,6 +55,8 @@ const TUNING = {
   dwellCooldownMs: 1400,    // Pause nach einer Auswahl
   pointerMaxDist: 0.16,     // Zeigefinger ↔ Fingersegment, relativ zur Handflächenlänge im Bild
   wristBand: 0.34,          // halbe Breite des Handgelenk-Korridors (relativ)
+  contactOn: 0.34,          // Daumen- zu Fingerkuppe / Handflächenlänge: Kontakt-Korrektur beginnt
+  contactFull: 0.18,        // … wirkt voll
   pinchOn: 0.28,            // Daumen-Zeigefinger-Abstand / Handgrösse: Pinch beginnt
   pinchOff: 0.42,           // … endet (Hysterese)
   peelDragGain: 7,          // Schichten pro Bildhöhe beim Pinch-Ziehen
@@ -227,7 +229,7 @@ const UI = {
     'The 3D engine could not load. Check your internet connection and reload.'),
   webglFail: L('Dein Browser unterstützt kein WebGL.', 'Your browser does not support WebGL.'),
   retry: L('Neu laden', 'Reload'),
-  model: L('Modell', 'Model'),
+  model: L('Welche Hand? Mit Webcam erscheint sie als Spiegelbild.', 'Which hand? With the webcam it is shown as a mirror image.'),
   sideL: L('Links', 'Left'),
   sideR: L('Rechts', 'Right'),
   step: L('Schritt', 'Step'),
@@ -1526,6 +1528,22 @@ function regionName(id, lang) {
   return tr(REGION_TPL[r.tpl].n, lang);
 }
 
+// Handflächen-Rahmen aus Handgelenk + vier Knöcheln (Reihenfolge 0, 5, 9, 13, 17).
+// Die Ebene kommt aus Newells Verfahren über alle fünf Punkte – robuster als drei Einzelpunkte,
+// wenn die Tiefe einzelner Knöchel unsicher ist (z. B. eingerollte Finger beim Peace-Zeichen).
+// s = +1 für eine rechte, −1 für eine linke Hand-Geometrie.
+function palmFrame(P, s) {
+  let n = [0, 0, 0];
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i], b = P[(i + 1) % P.length];
+    n = vadd(n, [(a[1] - b[1]) * (a[2] + b[2]), (a[2] - b[2]) * (a[0] + b[0]), (a[0] - b[0]) * (a[1] + b[1])]);
+  }
+  const palmar = vmul(vnorm(n), s);
+  let distal = vsub(P[2], P[0]); distal = vnorm(vsub(distal, vmul(palmar, vdot(distal, palmar))));
+  const radial = vmul(vcross(distal, palmar), s);
+  return { radial, distal, palmar };
+}
+
 // ═══════════════════════════════ Engine ═══════════════════════════════
 const SPOT_SVG = '<svg viewBox="-13 -13 26 26" width="26" height="26" aria-hidden="true"><circle class="ha-ring" r="8.6"/><circle class="ha-dot" r="1.7"/><path class="ha-x" d="M-3.6 -3.6L3.6 3.6M3.6 -3.6L-3.6 3.6"/></svg>';
 const RING_SVG = '<svg viewBox="-20 -20 40 40" width="40" height="40" aria-hidden="true"><circle class="ha-cr-bg" r="15"/><circle class="ha-cr-fg" r="15" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90)"/><circle class="ha-cr-dot" r="4"/></svg>';
@@ -1552,6 +1570,7 @@ class HandEngine {
     this.ex = null;
     this.disposed = false;
     this.poseDirty = true;
+    this.mirrorView = false;
   }
 
   // ───── Aufbau ─────
@@ -1629,13 +1648,11 @@ class HandEngine {
     mk('ttip', N.tp2, [0, t.len[2], 0]);
     this.nodeNames = Object.keys(N);
     this.rigRoot.updateMatrixWorld(true);
-    // Rahmen, den die Landmarken (Handgelenk, MCP II/III/V) im Rig aufspannen – gleicht die Mittelhandwölbung aus
+    // Rahmen, den die Handflächen-Landmarken im Rig aufspannen (gleiche Rechnung wie beim Tracking)
     {
-      const wp = (n) => new THREE.Vector3().setFromMatrixPosition(this.relMatrix(N[n], new THREE.Matrix4()));
-      const p0 = wp('fa'), p5 = wp('p1_1'), p9 = wp('p1_2'), p17 = wp('p1_4');
-      const dl = p9.clone().sub(p0).normalize();
-      const rd = p5.clone().sub(p17); rd.addScaledVector(dl, -rd.dot(dl)).normalize();
-      const pm = new THREE.Vector3().crossVectors(rd, dl);
+      const wp = (n) => new THREE.Vector3().setFromMatrixPosition(this.relMatrix(N[n], new THREE.Matrix4())).toArray();
+      const fr = palmFrame([wp('fa'), wp('p1_1'), wp('p1_2'), wp('p1_3'), wp('p1_4')], 1);
+      const rd = new THREE.Vector3(...fr.radial), dl = new THREE.Vector3(...fr.distal), pm = new THREE.Vector3(...fr.palmar);
       this.lfQ = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(rd, dl, pm));
       const inv = this.lfQ.clone().invert();
       this.lfCorr = { R: inv, L: new THREE.Quaternion(inv.x, -inv.y, -inv.z, inv.w) };
@@ -1973,19 +1990,23 @@ class HandEngine {
   }
   rigPoint(n, x, y, z, out = new THREE.Vector3()) { return out.set(x, y, z).applyMatrix4(this.relMatrix(this.N[n], this._m || (this._m = new THREE.Matrix4()))); }
   // Daumen per CCD-IK an eine Fingerbeere führen
-  solveThumb(fi, P) {
+  solveThumb(fi, P, start, iters = 60) {
     const N = this.N;
-    const guess = { ...P, tq: this.Q0.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(28 * DEG, 0, 4 * DEG, 'ZXY'))), t: [25 * DEG, 20 * DEG] };
-    this.applyPose(guess); this.rigRoot.updateMatrixWorld(true);
+    const guess = start
+      ? { ...P, tq: start.tq.clone(), t: [...start.t] }
+      : { ...P, tq: this.Q0.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(28 * DEG, 0, 4 * DEG, 'ZXY'))), t: [25 * DEG, 20 * DEG] };
+    this.applyPose(guess);
+    for (const n of this.nodeNames) N[n].updateMatrix();
+    const upd = () => { N.tmc.updateMatrix(); N.tp1.updateMatrix(); N.tp2.updateMatrix(); };
     const L3 = RIG.fingers[fi].len[3], Lt2 = RIG.thumb.len[2];
     const tgtL = [0, L3 * 0.72, 0.6], effL = [0, Lt2 * 0.72, 0.55];
     const E = new THREE.Vector3(), Tg = new THREE.Vector3(), J = new THREE.Vector3(), ax = new THREE.Vector3();
     const e = new THREE.Vector3(), g = new THREE.Vector3(), c = new THREE.Vector3();
     const lim = { tp1: [-10 * DEG, 70 * DEG], tp2: [-15 * DEG, 85 * DEG] };
     const m = new THREE.Matrix4();
-    for (let it = 0; it < 60; it++) {
+    for (let it = 0; it < iters; it++) {
       for (const j of ['tp2', 'tp1', 'tmc']) {
-        this.rigRoot.updateMatrixWorld(true);
+        upd();
         this.rigPoint('tp2', ...effL, E); this.rigPoint('p3_' + fi, ...tgtL, Tg);
         this.relMatrix(N[j], m); J.setFromMatrixPosition(m);
         e.subVectors(E, J); g.subVectors(Tg, J);
@@ -2003,10 +2024,11 @@ class HandEngine {
           N[j].rotation.x = clamp(N[j].rotation.x + a * 0.8, lim[j][0], lim[j][1]);
         }
       }
-      this.rigRoot.updateMatrixWorld(true);
+      upd();
       this.rigPoint('tp2', ...effL, E); this.rigPoint('p3_' + fi, ...tgtL, Tg);
       if (E.distanceTo(Tg) < 0.05) break;
     }
+    this.poseDirty = true;
     return { tq: N.tmc.quaternion.clone(), mcp: N.tp1.rotation.x, ip: N.tp2.rotation.x, err: E.distanceTo(Tg) };
   }
   blendPose(cur, tgt, k) {
@@ -2020,19 +2042,28 @@ class HandEngine {
   }
   restQuat(t) {
     const sway = this.reduced ? 0 : Math.sin(t * 0.00045) * 0.05;
-    return new THREE.Quaternion().setFromEuler(new THREE.Euler(0, sway, this.side === 'L' ? 0.2 : -0.2));
+    return new THREE.Quaternion().setFromEuler(new THREE.Euler(0, sway, this.displaySide() === 'L' ? 0.2 : -0.2));
+  }
+  // Im Spiegel-Modus zeigt das Modell das Spiegelbild deiner Hand (wie die Kamera-Vorschau):
+  // eine linke Hand erscheint dann als rechte Hand – genau wie in einem Spiegel.
+  displaySide() { return this.mirrorView ? (this.side === 'L' ? 'R' : 'L') : this.side; }
+  applyChirality() { this.handRoot.scale.x = this.displaySide() === 'L' ? -1 : 1; }
+  setMirrorView(on) {
+    if (!!on === !!this.mirrorView) return;
+    this.mirrorView = !!on; this.applyChirality();
+    if (on) this.setView('palm');
   }
 
   // ───── Öffentliche Steuerung ─────
   setSide(s) {
     if (s !== 'L' && s !== 'R') return;
     this.side = s;
-    this.handRoot.scale.x = s === 'L' ? -1 : 1;
+    this.applyChirality();
   }
   setLayers(st) { Object.assign(this.state, st); if (this.reduced) this.peelCur = this.state.peel; }
   setPoseName(n) { if (this.poseCache[n]) { this.poseName = n; this.ex = null; } }
   setView(v) {
-    const s = this.side === 'L' ? -1 : 1;
+    const s = this.displaySide() === 'L' ? -1 : 1;
     const Y = { palm: 0, back: Math.PI, thumb: -Math.PI / 2 * s, pinky: Math.PI / 2 * s, home: 0.35 }[v];
     if (Y === undefined) return;
     let y = Y; while (y - this.yaw > Math.PI) y -= Math.PI * 2; while (y - this.yaw < -Math.PI) y += Math.PI * 2;
@@ -2149,12 +2180,12 @@ class HandEngine {
     if (swap) s = s === 'L' ? 'R' : 'L';
     return s;
   }
-  poseFromLandmarks(wl, sideOverride) {
-    const s = (sideOverride || this.side) === 'L' ? -1 : 1;
-    const p = wl.map((q) => [q.x, -q.y, q.z]);
-    const distal = vnorm(vsub(p[9], p[0]));
-    let radial = vsub(p[5], p[17]); radial = vnorm(vsub(radial, vmul(distal, vdot(radial, distal))));
-    const palmar = vmul(vcross(radial, distal), s);
+  // modelSide = angezeigte Modellseite. Spiegelbild-Koordinaten: x wie Vorschau, y nach oben,
+  // z zur Kamera hin (= zum Betrachter). Die Geometrie ist dadurch seitenverkehrt → Modellseite gespiegelt.
+  poseFromLandmarks(wl, modelSide) {
+    const s = (modelSide || this.displaySide()) === 'L' ? -1 : 1;
+    const p = wl.map((q) => [q.x, -q.y, -q.z]);
+    const { radial, distal, palmar } = palmFrame([p[0], p[5], p[9], p[13], p[17]], s);
     const c0 = vmul(radial, s), c1 = distal, c2 = vcross(c0, c1);
     const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3(...c0), new THREE.Vector3(...c1), new THREE.Vector3(...c2)));
     q.multiply(s > 0 ? this.lfCorr.R : this.lfCorr.L);
@@ -2190,20 +2221,47 @@ class HandEngine {
     const ang = 2 * Math.acos(clamp(Math.abs(qs.w), 0, 1));
     if (ang > 80 * DEG) qs = new THREE.Quaternion().slerp(qs, (80 * DEG) / ang);
     const tq = qs.clone().multiply(this.Q0);
-    const Xt = new THREE.Vector3(1, 0, 0).applyQuaternion(tq).toArray();
     const cV = vnorm(vsub(L[3], L[2])), eV = vnorm(vsub(L[4], L[3]));
-    const t = [clamp(sa(b.toArray(), cV, Xt), -20 * DEG, 75 * DEG), clamp(sa(cV, eV, Xt), -25 * DEG, 90 * DEG)];
-    return { q, pose: { w: [0, 0], tq, t, f }, facing: palmar[2] < 0 ? 'palm' : 'back', palmar };
+    // Eindrehung des Daumens aus seiner Beugeebene: die Achse, um die sich Grund- und Endgelenk beugen
+    const bA = b.toArray();
+    const nb = vadd(vcross(bA, cV), vcross(cV, eV)); const nbl = vlen(nb);
+    if (nbl > 0.12) {
+      const Xs = new THREE.Vector3(1, 0, 0).applyQuaternion(tq);
+      const Xn = new THREE.Vector3(...nb); Xn.addScaledVector(b, -Xn.dot(b)).normalize();
+      if (Xn.dot(Xs) < 0) Xn.negate();
+      const Zn = new THREE.Vector3().crossVectors(Xn, b);
+      const qp = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(Xn, b, Zn));
+      tq.slerp(qp, clamp((nbl - 0.12) / 0.25, 0, 1));
+    }
+    const Xt = new THREE.Vector3(1, 0, 0).applyQuaternion(tq).toArray();
+    const t = [clamp(sa(bA, cV, Xt), -20 * DEG, 75 * DEG), clamp(sa(cV, eV, Xt), -25 * DEG, 90 * DEG)];
+    return { q, pose: { w: [0, 0], tq, t, f }, facing: palmar[2] > 0 ? 'palm' : 'back', palmar };
+  }
+  // Berühren sich Daumen und eine Fingerkuppe an der echten Hand, den Modell-Daumen per IK dorthin führen
+  applyContact(pose, wl) {
+    const d = (a, b) => Math.hypot(wl[a].x - wl[b].x, wl[a].y - wl[b].y, wl[a].z - wl[b].z);
+    const palm = d(0, 9) || 1;
+    let best = null;
+    for (const [fi, tip] of [[1, 8], [2, 12], [3, 16], [4, 20]]) {
+      const r = d(4, tip) / palm;
+      if (r < TUNING.contactOn && (!best || r < best.r)) best = { fi, r };
+    }
+    if (!best) return 0;
+    const w = clamp((TUNING.contactOn - best.r) / (TUNING.contactOn - TUNING.contactFull), 0, 1);
+    const ik = this.solveThumb(best.fi, pose, { tq: pose.tq, t: pose.t }, 14);
+    pose.tq.slerp(ik.tq, w);
+    pose.t[0] += (ik.mcp - pose.t[0]) * w; pose.t[1] += (ik.ip - pose.t[1]) * w;
+    return w;
   }
   // Test-Hilfe: aus einer Pose synthetische Weltlandmarken erzeugen (MediaPipe-Konvention, Selfie-Modus)
-  synthLandmarks(P, q, side) {
-    const saveSide = this.side; const saveQ = this.handRoot.quaternion.clone(); const saveV = this.viewPivot.quaternion.clone();
-    this.setSide(side); this.handRoot.quaternion.copy(q); this.viewPivot.quaternion.identity();
+  synthLandmarks(P, q, modelSide) {
+    const saveS = this.handRoot.scale.x; const saveQ = this.handRoot.quaternion.clone(); const saveV = this.viewPivot.quaternion.clone();
+    this.handRoot.scale.x = modelSide === 'L' ? -1 : 1; this.handRoot.quaternion.copy(q); this.viewPivot.quaternion.identity();
     this.applyPose(P); this.scene.updateMatrixWorld(true);
     const names = ['fa', 'tmc', 'tp1', 'tp2', 'ttip'];
     for (let f = 1; f <= 4; f++) names.push('p1_' + f, 'p2_' + f, 'p3_' + f, 'tip_' + f);
-    const out = names.map((n) => { const v = new THREE.Vector3().setFromMatrixPosition(this.N[n].matrixWorld); return { x: v.x / 100, y: -v.y / 100, z: v.z / 100 }; });
-    this.setSide(saveSide); this.handRoot.quaternion.copy(saveQ); this.viewPivot.quaternion.copy(saveV); this.applyPose(this.cur); this.poseDirty = true;
+    const out = names.map((n) => { const v = new THREE.Vector3().setFromMatrixPosition(this.N[n].matrixWorld); return { x: v.x / 100, y: -v.y / 100, z: -v.z / 100 }; });
+    this.handRoot.scale.x = saveS; this.handRoot.quaternion.copy(saveQ); this.viewPivot.quaternion.copy(saveV); this.applyPose(this.cur); this.poseDirty = true;
     return out;
   }
   pinchOf(lm, key) {
@@ -2328,6 +2386,7 @@ class HandEngine {
       const fresh = !this.trk.pose || !this.trk.seen || now - this.trk.lastT > TUNING.lostGraceMs;
       if (fresh) { this.trk.pose = this.clonePose(r.pose); this.trk.q = r.q.clone(); }
       else { this.blendPose(this.trk.pose, r.pose, a); this.trk.q.slerp(r.q, TUNING.rotSmoothing); }
+      this.applyContact(this.trk.pose, P.wl);
       this.trk.seen = true; this.trk.lastT = now; this.trk.facing = r.facing;
       out.facing = r.facing;
     }
@@ -2827,6 +2886,7 @@ export default function HandPainAtlas() {
   useEffect(() => { eng?.setHighlight(selected, hoverStruct || pinStruct); }, [eng, selected, hoverStruct, pinStruct]);
   useEffect(() => { eng?.setPainMarks(painMarks); }, [eng, painMarks]);
   useEffect(() => { eng?.setMode(settings.mode); }, [eng, settings.mode]);
+  useEffect(() => { eng?.setMirrorView(cam.on && settings.mode === 'mirror'); }, [eng, cam.on, settings.mode]);
   useEffect(() => {
     if (!ready || !selected) return;
     setExplored((ex) => (ex.includes(selected) ? ex : [...ex, selected]));
