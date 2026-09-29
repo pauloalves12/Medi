@@ -162,12 +162,34 @@ const flicker = await page.evaluate(() => {
   const seq = []; for (let i = 0; i < 60; i++) seq.push(i % 10 < 7 ? 'Right' : 'Left');
   let switched = false;
   for (const l of seq) { E.ingestHands(res(l), { mode: 'mirror', swap: false, aspect: 4 / 3 }); if (E.side !== 'R') switched = true; }
+  // dieselbe Hand am selben Ort, anhaltend anderes Label → träge, aber sicher umstimmen
   let framesToSwitch = -1;
-  for (let i = 0; i < 40; i++) { E.ingestHands(res('Left'), { mode: 'mirror', swap: false, aspect: 4 / 3 }); if (E.side === 'L') { framesToSwitch = i + 1; break; } }
+  for (let i = 0; i < 240; i++) { E.ingestHands(res('Left'), { mode: 'mirror', swap: false, aspect: 4 / 3 }); if (E.side === 'L') { framesToSwitch = i + 1; break; } }
+  // Handwechsel: Hand taucht an anderer Stelle auf → rasch entscheiden
+  const moved = lm.map((q) => ({ ...q, x: q.x + 0.3 }));
+  let framesNewTrack = -1;
+  for (let i = 0; i < 60; i++) { E.ingestHands({ multiHandLandmarks: [moved], multiHandWorldLandmarks: [wl], multiHandedness: [{ label: 'Right', score: 0.9 }] }, { mode: 'mirror', swap: false, aspect: 4 / 3 }); if (E.side === 'R') { framesNewTrack = i + 1; break; } }
   E.setSide(saveSide); E.resetTracking();
-  return { switched, framesToSwitch };
+  return { switched, framesToSwitch, framesNewTrack };
 });
-ok(!flicker.switched && flicker.framesToSwitch > 0 && flicker.framesToSwitch <= 30, `Seitenerkennung stabil bei Flackern, wechselt bei klarer Mehrheit nach ${flicker.framesToSwitch} Bildern`);
+ok(!flicker.switched && flicker.framesToSwitch > 30 && flicker.framesToSwitch <= 150, `Seitenerkennung stabil bei Flackern, gleiche Hand wechselt erst nach ${flicker.framesToSwitch} Bildern (≈ ${(flicker.framesToSwitch / 60).toFixed(2)} s bei 60 fps)`);
+ok(flicker.framesNewTrack > 0 && flicker.framesNewTrack <= 12, `Neu auftauchende Hand wird rasch erkannt (${flicker.framesNewTrack} Bilder ≈ ${(flicker.framesNewTrack / 60).toFixed(2)} s)`);
+
+// Gespiegelte Tiefe: Label kippt, Geometrie tiefengespiegelt → Modell zeigt weiterhin dieselbe Seite und Pose
+const depthFlip = await page.evaluate(() => {
+  const E = window.__handAtlas; const THREE = window.THREE; const D = 180 / Math.PI;
+  const saveSide = E.side; E.setSide('L'); E.setMirrorView(true); E.resetTracking();
+  const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2, 0.3, 0.1));
+  const wl = E.synthLandmarks(E.poseCache.relaxed, q0, E.displaySide());
+  const lm = wl.map((p) => ({ x: 0.5 + p.x * 2.2 / (4 / 3), y: 0.5 + p.y * 2.2, z: 0 }));
+  const flipped = wl.map((p) => ({ x: p.x, y: p.y, z: -p.z }));
+  const run = (w, label) => { E.resetTracking(); E.ingestHands({ multiHandLandmarks: [lm], multiHandWorldLandmarks: [w], multiHandedness: [{ label, score: 0.9 }] }, { mode: 'mirror', swap: false, aspect: 4 / 3 }); return { q: E.trk.q.clone(), facing: E.trk.facing, f: E.trk.pose.f.map((a) => a.slice()) }; };
+  const good = run(wl, 'Left'), glitch = run(flipped, 'Right');
+  E.setMirrorView(false); E.setSide(saveSide); E.resetTracking();
+  let fe = 0; for (let k = 0; k < 4; k++) for (const j of [0, 2, 3]) fe = Math.max(fe, Math.abs(good.f[k][j] - glitch.f[k][j]) * D);
+  return { rot: 2 * Math.acos(Math.min(1, Math.abs(good.q.dot(glitch.q)))) * D, fe, a: good.facing, b: glitch.facing };
+});
+ok(depthFlip.rot < 3 && depthFlip.fe < 3 && depthFlip.a === depthFlip.b, `Tiefengespiegeltes Bild wird korrigiert (Abweichung ${depthFlip.rot.toFixed(1)}°, Finger ${depthFlip.fe.toFixed(1)}°, Seite ${depthFlip.a}/${depthFlip.b})`);
 
 // Kontakt-Korrektur: Daumenwinkel absichtlich verfälscht, Kuppen berühren sich in den Landmarken → Modell schliesst den Griff
 const contact = await page.evaluate(() => {

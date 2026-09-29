@@ -57,9 +57,15 @@ const TUNING = {
   wristBand: 0.34,          // halbe Breite des Handgelenk-Korridors (relativ)
   contactOn: 0.34,          // Daumen- zu Fingerkuppe / Handflächenlänge: Kontakt-Korrektur beginnt
   contactFull: 0.18,        // … wirkt voll
-  sideVoteGain: 0.1,        // Seitenerkennung: Gewicht einer Stimme (mal Sicherheit der Erkennung)
-  sideVoteDecay: 0.96,      // … Vergessen pro Bild
-  sideVoteSwitch: 0.8,      // … Schwelle für einen Seitenwechsel (Hysterese)
+  // Seitenerkennung (links/rechts): Stimmen mit Vergessen und Hysterese.
+  // Neue Spur (Hand neu im Bild oder an anderer Stelle) → rasch entscheiden; dieselbe Hand am selben Ort → nur träge umstimmen.
+  sideVoteRate: 6,          // Stimmen pro Sekunde, solange die Seite einer neuen Spur noch offen ist
+  sideVoteRateHold: 1,      // … danach (Fehldeutungen derselben Hand sollen das Modell nicht umklappen)
+  sideVoteTau: 2,           // Vergessen (Zeitkonstante in s)
+  sideVoteSwitch: 0.6,      // Schwelle für eine Entscheidung
+  sideJump: 0.2,            // Handgelenk springt um mehr als diesen Bildanteil → neue Spur
+  sideGapMs: 1500,          // Hand länger weg → neue Spur
+  sidePosW: 0.25,           // leichter Hinweis aus der Bildhälfte (Spiegelbild: rechte Hand meist rechts)
   pinchOn: 0.28,            // Daumen-Zeigefinger-Abstand / Handgrösse: Pinch beginnt
   pinchOff: 0.42,           // … endet (Hysterese)
   peelDragGain: 7,          // Schichten pro Bildhöhe beim Pinch-Ziehen
@@ -70,7 +76,7 @@ const TUNING = {
   euroRotBeta: 0.7,
   airGain: 1.45,            // Luft-Cursor: Verstärkung um die Bildmitte
   airSmoothing: 0.35,
-  lostGraceMs: 700,         // Hand kurz verloren → Pose halten
+  lostGraceMs: 1500,        // Hand kurz verloren → letzte Pose halten
   pickPx: 38,               // Klickradius um einen Marker (px)
   skinVoxel: 0.2,           // Auflösung der Haut (cm) – kleiner = feiner, langsamer
   poseEase: 7.5,            // Geschwindigkeit der Pose-Übergänge (1/s)
@@ -2430,16 +2436,26 @@ class HandEngine {
       }
     }
     const P = hands[pi]; out.puppet = pi;
+    // Ein echter Handwechsel heisst fast immer: Hand kurz weg oder an anderer Stelle. Eine Fehldeutung passiert dagegen,
+    // während dieselbe Hand ruhig am selben Ort bleibt → dann nur träge umstimmen (die Tiefenkorrektur unten fängt sie ab).
+    const jump = this.trk.lastWrist ? Math.hypot(P.lm[0].x - this.trk.lastWrist.x, P.lm[0].y - this.trk.lastWrist.y) : 1;
+    if (jump > TUNING.sideJump || now - (this.trk.lastWristT || -1e9) > TUNING.sideGapMs) { this.trk.vote = 0; this.trk.decided = false; }
     this.trk.lastWrist = { x: P.lm[0].x, y: P.lm[0].y }; this.trk.lastWristT = now;
-    // Seite nur bei eindeutiger, anhaltender Mehrheit wechseln (Stimmen mit Vergessen, Hysterese)
     if (hands.length === 1 && P.label) {
-      const v = (this.trk.vote || 0) * TUNING.sideVoteDecay + (P.label === 'R' ? 1 : -1) * P.score * TUNING.sideVoteGain;
-      this.trk.vote = clamp(v, -1.5, 1.5);
+      const dt = clamp((now - (this.trk.voteT || now)) / 1000, 1 / 60, 0.25); this.trk.voteT = now;
+      const px = opt.swap ? 1 - P.lm[0].x : P.lm[0].x;
+      const ev = (P.label === 'R' ? 1 : -1) * clamp((P.score - 0.5) * 2, 0, 1) + TUNING.sidePosW * clamp((px - 0.5) / 0.15, -1, 1);
+      const rate = this.trk.decided ? TUNING.sideVoteRateHold : TUNING.sideVoteRate;
+      this.trk.vote = clamp((this.trk.vote || 0) * Math.exp(-dt / TUNING.sideVoteTau) + ev * rate * dt, -1.5, 1.5);
       const want = this.trk.vote > TUNING.sideVoteSwitch ? 'R' : this.trk.vote < -TUNING.sideVoteSwitch ? 'L' : null;
+      if (want) this.trk.decided = true;
       if (want && want !== this.side) { this.setSide(want); this.opts.onSide?.(want); }
     }
     if (P.wl) {
-      const r = this.poseFromLandmarks(P.wl, undefined, P.lm, aspect);
+      // Kippt das Label gegen die stabile Seite, hat MediaPipe die Hand in der Tiefe gespiegelt gedeutet
+      // (rechte Handfläche ≈ linker Handrücken im 2D-Bild) → Tiefe zurückspiegeln, statt das Modell umklappen zu lassen.
+      const wl = P.label && P.label !== this.side ? P.wl.map((q) => ({ x: q.x, y: q.y, z: -q.z })) : P.wl;
+      const r = this.poseFromLandmarks(wl, undefined, P.lm, aspect);
       const fresh = !this.trk.pose || !this.trk.seen || now - this.trk.lastT > TUNING.lostGraceMs;
       if (fresh) this.trk.flt = null;
       const F = this.trk.flt || (this.trk.flt = {
@@ -2454,7 +2470,7 @@ class HandEngine {
       out2.tq.copy(F.tq.filter(r.pose.tq, ts));
       this.trk.pose = out2;
       this.trk.q = F.q.filter(r.q, ts).clone();
-      this.applyContact(this.trk.pose, P.wl);
+      this.applyContact(this.trk.pose, wl);
       this.trk.seen = true; this.trk.lastT = now; this.trk.facing = r.facing;
       out.facing = r.facing;
     }
@@ -2482,7 +2498,7 @@ class HandEngine {
     this.ptrDwell = out.dwell;
     return out;
   }
-  resetTracking() { this.trk.vote = 0; this.trk.flt = null; this.trk.seen = false; this.trk.pose = null; this.ptr = null; this.air = null; this.peelDrag = null; this.pinch = {}; this.setHover(null, 'ptr'); this.setHover(null, 'air'); this.dwellStep(null, performance.now()); }
+  resetTracking() { this.trk.vote = 0; this.trk.voteT = 0; this.trk.decided = false; this.trk.lastWrist = null; this.trk.flt = null; this.trk.seen = false; this.trk.pose = null; this.ptr = null; this.air = null; this.peelDrag = null; this.pinch = {}; this.setHover(null, 'ptr'); this.setHover(null, 'air'); this.dwellStep(null, performance.now()); }
   trackingActive(now) { return this.mode === 'mirror' && this.trk.seen && now - this.trk.lastT < TUNING.lostGraceMs; }
 
   // ───── Render-Schleife ─────
@@ -2512,8 +2528,9 @@ class HandEngine {
       for (const tb of this.tubes) if (tb.dynamic) { if (tb.entry.mesh.visible) this.updateTube(tb, tmp); else tb.stale = true; }
       this.poseDirty = false;
     }
-    const qT = trackOn && !this.ex ? this.trk.q : this.restQuat(t);
-    const kq = trackOn && !this.ex ? 1 : (this.reduced ? 1 : 1 - Math.exp(-dt * 3));
+    const useTrack = trackOn && !this.ex && this.trk.q;
+    const qT = useTrack ? this.trk.q : this.restQuat(t);
+    const kq = useTrack ? 1 : (this.reduced ? 1 : 1 - Math.exp(-dt * 3));
     this.handRoot.quaternion.slerp(qT, kq);
     const kv = this.reduced ? 1 : 1 - Math.exp(-dt * 6);
     this.yaw += (this.yawT - this.yaw) * kv; this.pitch += (this.pitchT - this.pitch) * kv;
